@@ -439,30 +439,26 @@ CIE Enterprise brings the power of semantic code search and call graph analysis 
 | **High-Fidelity Embeddings (1536 dim)** | — | ✅ |
 | **Integrated LLMs** | — | ✅ |
 | **Priority Support** | — | ✅ |
-| **Security Compliance** | — | ✅ |
 
 ### Enterprise Features
 
-🏢 **Distributed Architecture**
+**Distributed Architecture**
 Deploy CIE across your infrastructure with a Primary Hub and Edge Caches. All team members connect to the same indexed codebase with millisecond-latency queries worldwide.
 
-🤝 **Team Collaboration**
+**Team Collaboration**
 Share code intelligence across your entire engineering organization. One index, one source of truth—no more siloed knowledge.
 
-🔄 **CI/CD Integration**
+**CI/CD Integration**
 Automatically keep your code index up-to-date with every commit. Native integration with GitHub Actions, GitLab CI, Jenkins, and more.
 
-🎯 **High-Fidelity Embeddings**
+**High-Fidelity Embeddings**
 OpenAI-powered 1536-dimension embeddings for superior semantic search accuracy. Find exactly what you're looking for, even in massive codebases.
 
-🤖 **Integrated LLMs**
+**Integrated LLMs**
 Connect your preferred LLM provider for enhanced code analysis, architectural insights, and natural language queries about your codebase.
 
-📞 **Priority Support**
+**Priority Support**
 Direct access to our engineering team. SLAs, dedicated support channels, and implementation assistance.
-
-🔒 **Security & Compliance**
-Enterprise-grade security with SOC 2 compliance, SSO/SAML integration, audit logging, and data residency options.
 
 ### Get Started
 
