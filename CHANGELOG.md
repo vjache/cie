@@ -23,6 +23,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `cie index` now auto-detects running CIE server at `localhost:9090` even if `edge_cache` is not set in config.
 - `detectDockerCompose` now checks `~/.cie/docker-compose.yml` in addition to the project directory.
 
+### Documentation
+- Clarified that `cie serve --port 9090` can be used to serve local data on the same port as Docker, enabling MCP tools to work with locally indexed data without reconfiguration.
+
 ## [0.4.1] - 2026-01-23
 
 ### Fixed

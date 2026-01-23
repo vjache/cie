@@ -139,6 +139,40 @@ Last indexed: 1 minute ago
 | `cie status` | Show index statistics |
 | `cie query <script>` | Execute a CozoScript query |
 | `cie --mcp` | Start as an MCP server for AI assistants |
+| `cie serve` | Start a local HTTP server (alternative to Docker) |
+
+---
+
+## Local Server Mode (Alternative to Docker)
+
+If you prefer not to use Docker, or if you've indexed locally and want to use MCP tools, you can run CIE as a local HTTP server:
+
+```bash
+# Start local server on port 9090 (same as Docker)
+cie serve --port 9090
+```
+
+This starts a local HTTP server that:
+- Uses your local indexed data from `~/.cie/data/<project_id>/`
+- Exposes the same API as the Docker container
+- Works with MCP tools without any configuration changes
+
+**When to use `cie serve`:**
+- You indexed locally and want to use MCP tools
+- You don't want to run Docker
+- You're developing or debugging CIE itself
+
+**Usage:**
+```bash
+# Start server (foreground)
+cie serve --port 9090
+
+# In another terminal, verify it's working
+curl http://localhost:9090/health
+curl http://localhost:9090/v1/status
+```
+
+**Note:** You can run either Docker (`cie start`) OR local server (`cie serve`), but not both on the same port simultaneously.
 
 ---
 

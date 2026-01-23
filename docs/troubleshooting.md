@@ -1155,6 +1155,59 @@ cie query "?[name] := *cie_function{name} :limit 5"
 
 ## MCP Integration Issues
 
+### Issue: Indexed Locally but MCP Needs Docker Data
+
+**Symptoms:**
+- Ran `cie index` and data was indexed locally (to `~/.cie/data/`)
+- Docker MCP server returns no results or "database not initialized"
+- `cie status` shows functions indexed but MCP tools don't find them
+
+**Cause:**
+Local indexing stores data in `~/.cie/data/<project_id>/` on your machine, while Docker stores data in a separate Docker volume. The MCP server running in Docker cannot access your local data.
+
+**Solution:**
+
+Use `cie serve` to run a local MCP-compatible server that uses your local data:
+
+```bash
+# Stop Docker if running (optional, to avoid port conflict)
+cie stop
+
+# Start local server on same port as Docker (9090)
+cie serve --port 9090
+```
+
+Now your MCP tools will work with the locally indexed data. The server exposes the same API as Docker, so no MCP configuration changes needed.
+
+**Alternative: Re-index via Docker**
+
+If you prefer using Docker:
+
+```bash
+# Start Docker infrastructure
+cie start
+
+# Re-index (will use Docker server automatically)
+cie index
+```
+
+**Verify:**
+```bash
+# Check server is responding
+curl http://localhost:9090/health
+# Should return: {"status":"ok","project_id":"...","indexed":true}
+
+# Check function count
+curl http://localhost:9090/v1/status
+# Should show: {"functions": X, ...}
+```
+
+**Related:**
+- [Local vs Docker Mode](#local-vs-docker-mode)
+- [`cie serve` Command Reference](./getting-started.md#cie-serve)
+
+---
+
 ### Issue: MCP Server Won't Start
 
 **Symptoms:**
