@@ -25,7 +25,6 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log/slog"
-	"runtime"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -33,12 +32,6 @@ import (
 
 	"github.com/kraklabs/cie/pkg/storage"
 )
-
-// isARM64Linux returns true if running on ARM64 Linux.
-// Tree-sitter has known stability issues on this platform.
-func isARM64Linux() bool {
-	return runtime.GOOS == "linux" && runtime.GOARCH == "arm64"
-}
 
 // ProgressCallback is called to report progress during pipeline execution.
 // Parameters:
@@ -158,20 +151,16 @@ func NewLocalPipeline(config Config, logger *slog.Logger) (*LocalPipeline, error
 		logger.Info("parser.mode", "mode", "simplified")
 		parser = NewParser(logger)
 	case ParserModeAuto:
-		// Check for ARM64 Linux where tree-sitter has known stability issues
-		// See: https://github.com/tree-sitter/tree-sitter/issues/3296
-		if isARM64Linux() {
-			logger.Info("parser.mode", "mode", "simplified", "selected_by", "auto", "reason", "arm64_linux_stability")
-			parser = NewParser(logger)
+		// Always try tree-sitter first, even on ARM64 Linux.
+		// The Docker image is built with proper tree-sitter bindings.
+		// Only fall back to simplified if tree-sitter is unavailable.
+		tsParser := NewTreeSitterParser(logger)
+		if tsParser != nil {
+			logger.Info("parser.mode", "mode", "treesitter", "selected_by", "auto")
+			parser = tsParser
 		} else {
-			tsParser := NewTreeSitterParser(logger)
-			if tsParser != nil {
-				logger.Info("parser.mode", "mode", "treesitter", "selected_by", "auto")
-				parser = tsParser
-			} else {
-				logger.Info("parser.mode", "mode", "simplified", "selected_by", "auto", "reason", "treesitter_unavailable")
-				parser = NewParser(logger)
-			}
+			logger.Info("parser.mode", "mode", "simplified", "selected_by", "auto", "reason", "treesitter_unavailable")
+			parser = NewParser(logger)
 		}
 	default:
 		logger.Warn("parser.mode.unknown", "mode", parserMode, "fallback", "treesitter")
