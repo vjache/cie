@@ -206,8 +206,9 @@ func createInitConfig(cwd string, f initFlags) *Config {
 	cfg := DefaultConfig(pid)
 	if f.edgeCache != "" {
 		cfg.CIE.EdgeCache = f.edgeCache
-	} else if detectDockerCompose(cwd) {
-		// If docker-compose.yml exists with CIE server, default to localhost:9090
+	} else {
+		// Default to localhost:9090 (Docker mode) since that's the recommended workflow.
+		// Users who don't want Docker can edit the config or use --edge-cache flag.
 		cfg.CIE.EdgeCache = "http://localhost:9090"
 	}
 	if f.primaryHub != "" {
