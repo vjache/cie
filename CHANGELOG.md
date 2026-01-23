@@ -7,17 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-01-23
+
+### Fixed
+- Fixed `cie init` not setting `edge_cache` URL when Docker server is starting but not yet responding.
+- Auto-detect `docker-compose.yml` with CIE server configuration and default to `http://localhost:9090`.
+
+## [0.3.0] - 2026-01-23
+
 ### Added
 - New `cie start` command to automate Docker infrastructure setup and model pulling.
+- New `cie stop` command to stop Docker containers (preserves data).
+- New `cie reset` command to delete indexed data with `--docker` flag for full cleanup.
 - Automatic detection of Docker-based CIE server during `cie init` and command execution.
 - Persistence of server URL in `.cie/project.yaml` via `edge_cache` field.
 - Static linking for CozoDB library in `Makefile` for better portability on macOS/Linux.
 - Thread-safety fixes for parallel indexing (Tree-sitter parser pool and CallResolver locks).
+- Homebrew tap support: `brew install kraklabs/cie`.
+- GitHub Actions release workflow with multi-platform binaries (linux-amd64, linux-arm64, darwin-arm64).
 
 ### Changed
 - Improved `cie init` flow to suggest `cie start` as the next step.
 - Simplified `README.md` and documentation with the new `init` -> `start` -> `index` workflow.
 - Updated `install.sh` with the new workflow instructions.
+- Client-server architecture: CLI delegates to Docker-based CIE server for heavy operations.
 
 ### Fixed
 - Fixed critical `SIGSEGV` and `semawakeup` crashes on macOS/Darwin when running indexing.
@@ -71,5 +84,7 @@ Initial open source release of CIE (Code Intelligence Engine).
 - No hardcoded credentials in codebase
 - All API keys via environment variables only
 
-[unreleased]: https://github.com/kraklabs/cie/compare/v0.1.0...HEAD
+[unreleased]: https://github.com/kraklabs/cie/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/kraklabs/cie/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/kraklabs/cie/compare/v0.1.0...v0.3.0
 [0.1.0]: https://github.com/kraklabs/cie/releases/tag/v0.1.0

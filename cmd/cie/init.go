@@ -206,6 +206,9 @@ func createInitConfig(cwd string, f initFlags) *Config {
 	cfg := DefaultConfig(pid)
 	if f.edgeCache != "" {
 		cfg.CIE.EdgeCache = f.edgeCache
+	} else if detectDockerCompose(cwd) {
+		// If docker-compose.yml exists with CIE server, default to localhost:9090
+		cfg.CIE.EdgeCache = "http://localhost:9090"
 	}
 	if f.primaryHub != "" {
 		cfg.CIE.PrimaryHub = f.primaryHub
@@ -504,4 +507,24 @@ func isCIEServerAlive(url string) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode == http.StatusOK
+}
+
+// detectDockerCompose checks if docker-compose.yml exists and contains CIE server configuration.
+// This is used to auto-configure edge_cache URL when running in local Docker mode.
+func detectDockerCompose(dir string) bool {
+	composePath := filepath.Join(dir, "docker-compose.yml")
+	content, err := os.ReadFile(composePath) //nolint:gosec // G304: composePath built from repo dir
+	if err != nil {
+		// Also check docker-compose.yaml
+		composePath = filepath.Join(dir, "docker-compose.yaml")
+		content, err = os.ReadFile(composePath) //nolint:gosec // G304: composePath built from repo dir
+		if err != nil {
+			return false
+		}
+	}
+	// Check if this compose file has CIE server (look for cie-server or port 9090)
+	contentStr := string(content)
+	return strings.Contains(contentStr, "cie-server") ||
+		strings.Contains(contentStr, "9090:8080") ||
+		strings.Contains(contentStr, "\"9090:8080\"")
 }
