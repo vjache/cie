@@ -115,33 +115,15 @@ curl -sSL https://raw.githubusercontent.com/kraklabs/cie/main/install.sh | sh
 **Manual download:**
 Download from [GitHub Releases](https://github.com/kraklabs/cie/releases/latest)
 
-### 2. Clone and Start Infrastructure
-
-CIE runs as a server in Docker with Ollama for embeddings:
+### 2. Index Your Repository
 
 ```bash
-# Clone the repository (contains docker-compose.yml)
-git clone https://github.com/kraklabs/cie.git
-cd cie
-
-# Start the infrastructure (Ollama + CIE Server + Model setup)
-cie start
-```
-
-### 3. Initialize and Index Your Repository
-
-```bash
-# Navigate to your project
 cd /path/to/your/repo
 
-# Initialize project configuration
-cie init -y
-
-# Index the codebase
-cie index
-
-# Check status
-cie status
+cie init      # Initialize project configuration
+cie start     # Start Docker infrastructure (Ollama + CIE Server)
+cie index     # Index the codebase
+cie status    # Check indexing status
 ```
 
 **Example output:**
