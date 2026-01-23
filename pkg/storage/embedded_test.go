@@ -409,6 +409,190 @@ func TestEmbeddedBackend_ConcurrentReads(t *testing.T) {
 	}
 }
 
+// TestEmbeddedBackend_ProjectMeta tests the project metadata storage.
+func TestEmbeddedBackend_ProjectMeta(t *testing.T) {
+	backend := setupTestStorage(t)
+	defer func() {
+		_ = backend.Close()
+	}()
+
+	err := backend.EnsureSchema()
+	if err != nil {
+		t.Fatalf("EnsureSchema failed: %v", err)
+	}
+
+	// Test GetProjectMeta with non-existent key returns empty string
+	value, err := backend.GetProjectMeta("nonexistent")
+	if err != nil {
+		t.Fatalf("GetProjectMeta failed: %v", err)
+	}
+	if value != "" {
+		t.Errorf("expected empty string for nonexistent key, got %q", value)
+	}
+
+	// Test SetProjectMeta
+	err = backend.SetProjectMeta("test_key", "test_value")
+	if err != nil {
+		t.Fatalf("SetProjectMeta failed: %v", err)
+	}
+
+	// Test GetProjectMeta retrieves the value
+	value, err = backend.GetProjectMeta("test_key")
+	if err != nil {
+		t.Fatalf("GetProjectMeta failed: %v", err)
+	}
+	if value != "test_value" {
+		t.Errorf("expected 'test_value', got %q", value)
+	}
+
+	// Test SetProjectMeta overwrites existing value
+	err = backend.SetProjectMeta("test_key", "new_value")
+	if err != nil {
+		t.Fatalf("SetProjectMeta overwrite failed: %v", err)
+	}
+
+	value, err = backend.GetProjectMeta("test_key")
+	if err != nil {
+		t.Fatalf("GetProjectMeta after overwrite failed: %v", err)
+	}
+	if value != "new_value" {
+		t.Errorf("expected 'new_value', got %q", value)
+	}
+}
+
+// TestEmbeddedBackend_LastIndexedSHA tests the SHA storage convenience methods.
+func TestEmbeddedBackend_LastIndexedSHA(t *testing.T) {
+	backend := setupTestStorage(t)
+	defer func() {
+		_ = backend.Close()
+	}()
+
+	err := backend.EnsureSchema()
+	if err != nil {
+		t.Fatalf("EnsureSchema failed: %v", err)
+	}
+
+	// Test GetLastIndexedSHA with no SHA set
+	sha, err := backend.GetLastIndexedSHA()
+	if err != nil {
+		t.Fatalf("GetLastIndexedSHA failed: %v", err)
+	}
+	if sha != "" {
+		t.Errorf("expected empty SHA initially, got %q", sha)
+	}
+
+	// Test SetLastIndexedSHA
+	testSHA := "abc123def456"
+	err = backend.SetLastIndexedSHA(testSHA)
+	if err != nil {
+		t.Fatalf("SetLastIndexedSHA failed: %v", err)
+	}
+
+	// Test GetLastIndexedSHA retrieves the SHA
+	sha, err = backend.GetLastIndexedSHA()
+	if err != nil {
+		t.Fatalf("GetLastIndexedSHA failed: %v", err)
+	}
+	if sha != testSHA {
+		t.Errorf("expected %q, got %q", testSHA, sha)
+	}
+}
+
+// TestEmbeddedBackend_DeleteEntitiesForFile tests deletion of file entities.
+func TestEmbeddedBackend_DeleteEntitiesForFile(t *testing.T) {
+	backend := setupTestStorage(t)
+	defer func() {
+		_ = backend.Close()
+	}()
+
+	ctx := context.Background()
+
+	err := backend.EnsureSchema()
+	if err != nil {
+		t.Fatalf("EnsureSchema failed: %v", err)
+	}
+
+	// Insert test data for two files
+	insertQueries := []string{
+		// File 1: test.go
+		`?[id, path, hash, language, size] <- [["file:test.go", "test.go", "hash1", "go", 100]] :put cie_file {id, path, hash, language, size}`,
+		`?[id, name, signature, file_path, start_line, end_line, start_col, end_col] <- [["func:TestFunc", "TestFunc", "func()", "test.go", 1, 10, 0, 0]] :put cie_function {id, name, signature, file_path, start_line, end_line, start_col, end_col}`,
+		`?[function_id, code_text] <- [["func:TestFunc", "func TestFunc() {}"]] :put cie_function_code {function_id, code_text}`,
+		`?[id, file_id, function_id] <- [["def:test.go:TestFunc", "file:test.go", "func:TestFunc"]] :put cie_defines {id, file_id, function_id}`,
+
+		// File 2: other.go (should NOT be deleted)
+		`?[id, path, hash, language, size] <- [["file:other.go", "other.go", "hash2", "go", 200]] :put cie_file {id, path, hash, language, size}`,
+		`?[id, name, signature, file_path, start_line, end_line, start_col, end_col] <- [["func:OtherFunc", "OtherFunc", "func()", "other.go", 1, 5, 0, 0]] :put cie_function {id, name, signature, file_path, start_line, end_line, start_col, end_col}`,
+	}
+
+	for _, query := range insertQueries {
+		err := backend.Execute(ctx, query)
+		if err != nil {
+			t.Fatalf("insert query failed: %v\nQuery: %s", err, query)
+		}
+	}
+
+	// Verify both files exist
+	result, err := backend.Query(ctx, `?[path] := *cie_file{path}`)
+	if err != nil {
+		t.Fatalf("query files failed: %v", err)
+	}
+	if len(result.Rows) != 2 {
+		t.Fatalf("expected 2 files before delete, got %d", len(result.Rows))
+	}
+
+	// Verify both functions exist
+	result, err = backend.Query(ctx, `?[name] := *cie_function{name}`)
+	if err != nil {
+		t.Fatalf("query functions failed: %v", err)
+	}
+	if len(result.Rows) != 2 {
+		t.Fatalf("expected 2 functions before delete, got %d", len(result.Rows))
+	}
+
+	// Delete entities for test.go
+	err = backend.DeleteEntitiesForFile("test.go")
+	if err != nil {
+		t.Fatalf("DeleteEntitiesForFile failed: %v", err)
+	}
+
+	// Verify test.go file is deleted
+	result, err = backend.Query(ctx, `?[path] := *cie_file{path}, path = "test.go"`)
+	if err != nil {
+		t.Fatalf("query test.go file failed: %v", err)
+	}
+	if len(result.Rows) != 0 {
+		t.Errorf("expected test.go file to be deleted, but found %d", len(result.Rows))
+	}
+
+	// Verify test.go function is deleted
+	result, err = backend.Query(ctx, `?[name] := *cie_function{name, file_path}, file_path = "test.go"`)
+	if err != nil {
+		t.Fatalf("query test.go functions failed: %v", err)
+	}
+	if len(result.Rows) != 0 {
+		t.Errorf("expected test.go functions to be deleted, but found %d", len(result.Rows))
+	}
+
+	// Verify other.go is NOT deleted
+	result, err = backend.Query(ctx, `?[path] := *cie_file{path}, path = "other.go"`)
+	if err != nil {
+		t.Fatalf("query other.go file failed: %v", err)
+	}
+	if len(result.Rows) != 1 {
+		t.Errorf("expected other.go file to still exist, but found %d", len(result.Rows))
+	}
+
+	// Verify other.go function is NOT deleted
+	result, err = backend.Query(ctx, `?[name] := *cie_function{name, file_path}, file_path = "other.go"`)
+	if err != nil {
+		t.Fatalf("query other.go functions failed: %v", err)
+	}
+	if len(result.Rows) != 1 {
+		t.Errorf("expected other.go functions to still exist, but found %d", len(result.Rows))
+	}
+}
+
 // TestEmbeddedBackend_DB tests direct database access.
 func TestEmbeddedBackend_DB(t *testing.T) {
 	backend := setupTestStorage(t)

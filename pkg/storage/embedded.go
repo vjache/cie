@@ -187,6 +187,8 @@ func (b *EmbeddedBackend) EnsureSchema() error {
 		`:create cie_type_code { type_id: String => code_text: String }`,
 		fmt.Sprintf(`:create cie_type_embedding { type_id: String => embedding: <F32; %d> }`, dim),
 		`:create cie_defines_type { id: String => file_id: String, type_id: String }`,
+		// Project metadata for incremental indexing
+		`:create cie_project_meta { key: String => value: String }`,
 	}
 
 	b.mu.Lock()
@@ -197,7 +199,8 @@ func (b *EmbeddedBackend) EnsureSchema() error {
 		if err != nil {
 			// Ignore "already exists" errors, but log others
 			errStr := err.Error()
-			if strings.Contains(errStr, "already exists") {
+			if strings.Contains(errStr, "already exists") ||
+				strings.Contains(errStr, "conflicts with an existing one") {
 				continue
 			}
 			// For other errors (like schema mismatch), return the error
@@ -228,6 +231,109 @@ func (b *EmbeddedBackend) CreateHNSWIndex(dimensions int) error {
 		_, err := b.db.Run(idx, nil)
 		if err != nil {
 			// Ignore "already exists" errors
+			continue
+		}
+	}
+
+	return nil
+}
+
+// GetProjectMeta retrieves a metadata value by key.
+// Returns empty string if key doesn't exist.
+func (b *EmbeddedBackend) GetProjectMeta(key string) (string, error) {
+	query := `?[value] := *cie_project_meta{key, value}, key = $key`
+	params := map[string]interface{}{"key": key}
+
+	b.mu.RLock()
+	result, err := b.db.Run(query, params)
+	b.mu.RUnlock()
+
+	if err != nil {
+		return "", err
+	}
+
+	if len(result.Rows) == 0 {
+		return "", nil
+	}
+
+	if val, ok := result.Rows[0][0].(string); ok {
+		return val, nil
+	}
+	return "", nil
+}
+
+// SetProjectMeta sets a metadata value by key.
+func (b *EmbeddedBackend) SetProjectMeta(key, value string) error {
+	query := `?[key, value] <- [[$key, $value]] :put cie_project_meta { key, value }`
+	params := map[string]interface{}{"key": key, "value": value}
+
+	b.mu.Lock()
+	_, err := b.db.Run(query, params)
+	b.mu.Unlock()
+
+	return err
+}
+
+// GetLastIndexedSHA retrieves the last successfully indexed git SHA.
+func (b *EmbeddedBackend) GetLastIndexedSHA() (string, error) {
+	return b.GetProjectMeta("last_indexed_sha")
+}
+
+// SetLastIndexedSHA stores the last successfully indexed git SHA.
+func (b *EmbeddedBackend) SetLastIndexedSHA(sha string) error {
+	return b.SetProjectMeta("last_indexed_sha", sha)
+}
+
+// DeleteEntitiesForFile removes all entities associated with a file path.
+// This is used during incremental indexing when files are deleted or modified.
+func (b *EmbeddedBackend) DeleteEntitiesForFile(filePath string) error {
+	// Delete in order: edges first, then entities
+	queries := []string{
+		// Delete call edges where caller or callee is in this file
+		`?[id] := *cie_calls{id, caller_id}, *cie_function{id: caller_id, file_path}, file_path = $path
+		 :rm cie_calls {id}`,
+		`?[id] := *cie_calls{id, callee_id}, *cie_function{id: callee_id, file_path}, file_path = $path
+		 :rm cie_calls {id}`,
+		// Delete defines edges for this file
+		`?[id] := *cie_defines{id, file_id}, *cie_file{id: file_id, path}, path = $path
+		 :rm cie_defines {id}`,
+		// Delete defines_type edges for this file
+		`?[id] := *cie_defines_type{id, file_id}, *cie_file{id: file_id, path}, path = $path
+		 :rm cie_defines_type {id}`,
+		// Delete function embeddings
+		`?[function_id] := *cie_function{id: function_id, file_path}, file_path = $path
+		 :rm cie_function_embedding {function_id}`,
+		// Delete function code
+		`?[function_id] := *cie_function{id: function_id, file_path}, file_path = $path
+		 :rm cie_function_code {function_id}`,
+		// Delete functions
+		`?[id] := *cie_function{id, file_path}, file_path = $path
+		 :rm cie_function {id}`,
+		// Delete type embeddings
+		`?[type_id] := *cie_type{id: type_id, file_path}, file_path = $path
+		 :rm cie_type_embedding {type_id}`,
+		// Delete type code
+		`?[type_id] := *cie_type{id: type_id, file_path}, file_path = $path
+		 :rm cie_type_code {type_id}`,
+		// Delete types
+		`?[id] := *cie_type{id, file_path}, file_path = $path
+		 :rm cie_type {id}`,
+		// Delete imports for this file
+		`?[id] := *cie_import{id, file_path}, file_path = $path
+		 :rm cie_import {id}`,
+		// Delete the file itself
+		`?[id] := *cie_file{id, path}, path = $path
+		 :rm cie_file {id}`,
+	}
+
+	params := map[string]interface{}{"path": filePath}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for _, query := range queries {
+		if _, err := b.db.Run(query, params); err != nil {
+			// Log but continue - some queries may fail if entities don't exist
 			continue
 		}
 	}

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Incremental indexing: only process changed files since last indexed commit.
+- Uses `git diff --name-status` to detect added, modified, deleted, and renamed files.
+- Added `cie_project_meta` table for storing project metadata (last indexed SHA).
+- New methods in EmbeddedBackend: `GetProjectMeta`, `SetProjectMeta`, `GetLastIndexedSHA`, `SetLastIndexedSHA`, `DeleteEntitiesForFile`.
+- Integration tests for incremental indexing.
+
+### Changed
+- Default indexing behavior is now incremental when possible (git repo with previous index).
+- Use `ForceReindex: true` in config to force full re-indexing.
+
 ## [0.4.1] - 2026-01-23
 
 ### Fixed

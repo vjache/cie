@@ -270,7 +270,12 @@ func (p *LocalPipeline) generateRunID(startTime time.Time) string {
 	return hex.EncodeToString(hash[:16])
 }
 
-// Run executes the full local ingestion pipeline.
+// Run executes the local ingestion pipeline.
+// By default, uses incremental indexing when:
+// - The repository is a git repo
+// - A previous indexing run exists (has last indexed SHA)
+// - ForceReindex is false in config
+// Falls back to full indexing otherwise.
 func (p *LocalPipeline) Run(ctx context.Context) (*IngestionResult, error) {
 	startTime := time.Now()
 	runID := p.generateRunID(startTime)
@@ -285,6 +290,20 @@ func (p *LocalPipeline) Run(ctx context.Context) (*IngestionResult, error) {
 	)
 	if err != nil {
 		return nil, fmt.Errorf("load repository: %w", err)
+	}
+
+	// Check if incremental indexing is possible
+	if !p.config.IngestionConfig.ForceReindex {
+		result, err := p.tryIncrementalRun(ctx, loadResult, runID, startTime)
+		if err == nil && result != nil {
+			return result, nil
+		}
+		if err != nil {
+			p.logger.Info("local.ingestion.incremental.fallback",
+				"reason", err.Error(),
+				"msg", "falling back to full indexing",
+			)
+		}
 	}
 
 	// Sort files by path for deterministic processing
@@ -427,6 +446,18 @@ func (p *LocalPipeline) Run(ctx context.Context) (*IngestionResult, error) {
 		"entities_written", entitiesSent,
 		"duration_ms", writeDuration.Milliseconds(),
 	)
+
+	// Update last indexed SHA for future incremental runs
+	deltaDetector := NewDeltaDetector(loadResult.RootPath, p.logger)
+	if deltaDetector.IsGitRepository() {
+		if headSHA, err := deltaDetector.GetHeadSHA(); err == nil {
+			if err := p.backend.SetLastIndexedSHA(headSHA); err != nil {
+				p.logger.Warn("local.ingestion.update_sha.error", "err", err)
+			} else {
+				p.logger.Info("local.ingestion.sha.saved", "sha", headSHA[:min(8, len(headSHA))])
+			}
+		}
+	}
 
 	// Build result
 	result := &IngestionResult{
@@ -620,4 +651,225 @@ func (p *LocalPipeline) parseFilesSequential(ctx context.Context, files []FileIn
 // Backend returns the underlying storage backend.
 func (p *LocalPipeline) Backend() *storage.EmbeddedBackend {
 	return p.backend
+}
+
+// tryIncrementalRun attempts to run incremental indexing.
+// Returns (result, nil) on success, (nil, nil) if incremental not possible, or (nil, err) on error.
+func (p *LocalPipeline) tryIncrementalRun(ctx context.Context, loadResult *LoadResult, runID string, startTime time.Time) (*IngestionResult, error) {
+	// Check if repo is a git repository
+	deltaDetector := NewDeltaDetector(loadResult.RootPath, p.logger)
+	if !deltaDetector.IsGitRepository() {
+		return nil, fmt.Errorf("not a git repository")
+	}
+
+	// Get last indexed SHA
+	lastSHA, err := p.backend.GetLastIndexedSHA()
+	if err != nil {
+		return nil, fmt.Errorf("get last indexed SHA: %w", err)
+	}
+	if lastSHA == "" {
+		return nil, fmt.Errorf("no previous indexing found (first run)")
+	}
+
+	// Get current HEAD SHA
+	headSHA, err := deltaDetector.GetHeadSHA()
+	if err != nil {
+		return nil, fmt.Errorf("get HEAD SHA: %w", err)
+	}
+
+	// No changes?
+	if headSHA == lastSHA {
+		p.logger.Info("local.ingestion.incremental.no_changes",
+			"sha", headSHA[:min(8, len(headSHA))],
+		)
+		return &IngestionResult{
+			ProjectID:     p.config.ProjectID,
+			RunID:         runID,
+			TotalDuration: time.Since(startTime),
+		}, nil
+	}
+
+	// Detect delta
+	p.logger.Info("local.ingestion.incremental.detect_delta",
+		"base_sha", lastSHA[:min(8, len(lastSHA))],
+		"head_sha", headSHA[:min(8, len(headSHA))],
+	)
+
+	delta, err := deltaDetector.DetectDelta(lastSHA, headSHA)
+	if err != nil {
+		return nil, fmt.Errorf("detect delta: %w", err)
+	}
+
+	// Filter delta
+	delta = FilterDelta(delta, p.config.IngestionConfig.ExcludeGlobs, p.config.IngestionConfig.MaxFileSizeBytes, loadResult.RootPath)
+
+	if !delta.HasChanges() {
+		p.logger.Info("local.ingestion.incremental.no_changes_after_filter")
+		if err := p.backend.SetLastIndexedSHA(headSHA); err != nil {
+			p.logger.Warn("local.ingestion.incremental.update_sha.error", "err", err)
+		}
+		return &IngestionResult{
+			ProjectID:     p.config.ProjectID,
+			RunID:         runID,
+			TotalDuration: time.Since(startTime),
+		}, nil
+	}
+
+	p.logger.Info("local.ingestion.incremental.mode",
+		"added", len(delta.Added),
+		"modified", len(delta.Modified),
+		"deleted", len(delta.Deleted),
+		"renamed", len(delta.Renamed),
+	)
+
+	// Step 1: Delete entities for removed/modified files
+	filesToDelete := append([]string{}, delta.Deleted...)
+	filesToDelete = append(filesToDelete, delta.Modified...)
+	for oldPath := range delta.Renamed {
+		filesToDelete = append(filesToDelete, oldPath)
+	}
+
+	for _, filePath := range filesToDelete {
+		if err := p.backend.DeleteEntitiesForFile(filePath); err != nil {
+			p.logger.Warn("local.ingestion.incremental.delete.error", "path", filePath, "err", err)
+		}
+	}
+
+	// Step 2: Get files to process (added + modified + renamed new paths)
+	filesToProcess := make(map[string]bool)
+	for _, f := range delta.Added {
+		filesToProcess[f] = true
+	}
+	for _, f := range delta.Modified {
+		filesToProcess[f] = true
+	}
+	for _, newPath := range delta.Renamed {
+		filesToProcess[newPath] = true
+	}
+
+	// Filter loadResult.Files to only include files in the delta
+	var changedFiles []FileInfo
+	for _, f := range loadResult.Files {
+		if filesToProcess[f.Path] {
+			changedFiles = append(changedFiles, f)
+		}
+	}
+
+	if len(changedFiles) == 0 {
+		p.logger.Info("local.ingestion.incremental.deletions_only",
+			"deleted", len(delta.Deleted),
+		)
+		if err := p.backend.SetLastIndexedSHA(headSHA); err != nil {
+			p.logger.Warn("local.ingestion.incremental.update_sha.error", "err", err)
+		}
+		return &IngestionResult{
+			ProjectID:      p.config.ProjectID,
+			RunID:          runID,
+			FilesProcessed: 0,
+			TotalDuration:  time.Since(startTime),
+		}, nil
+	}
+
+	// Step 3: Parse changed files
+	p.logger.Info("local.ingestion.incremental.parse", "file_count", len(changedFiles))
+	parseStart := time.Now()
+
+	parseWorkers := p.config.IngestionConfig.Concurrency.ParseWorkers
+	if parseWorkers <= 0 {
+		parseWorkers = 4
+	}
+
+	parseResult, parseErrors := p.parseFilesParallel(ctx, changedFiles, parseWorkers)
+	parseDuration := time.Since(parseStart)
+
+	// Step 4: Resolve cross-package calls
+	if len(parseResult.unresolvedCalls) > 0 {
+		resolver := NewCallResolver()
+		resolver.BuildIndex(parseResult.files, parseResult.functions, parseResult.imports, parseResult.packageNames)
+		resolvedCalls := resolver.ResolveCalls(parseResult.unresolvedCalls)
+		parseResult.calls = append(parseResult.calls, resolvedCalls...)
+	}
+
+	// Step 5: Generate embeddings
+	p.logger.Info("local.ingestion.incremental.embed", "function_count", len(parseResult.functions))
+	embedStart := time.Now()
+
+	embedResult, err := p.embeddingGen.EmbedFunctions(ctx, parseResult.functions)
+	if err != nil {
+		return nil, fmt.Errorf("generate embeddings: %w", err)
+	}
+	parseResult.functions = embedResult.Functions
+	embeddingErrors := embedResult.ErrorCount
+
+	if len(parseResult.types) > 0 {
+		typeEmbedResult, err := p.embeddingGen.EmbedTypes(ctx, parseResult.types)
+		if err != nil {
+			return nil, fmt.Errorf("generate type embeddings: %w", err)
+		}
+		parseResult.types = typeEmbedResult.Types
+		embeddingErrors += typeEmbedResult.ErrorCount
+	}
+
+	embedDuration := time.Since(embedStart)
+
+	// Step 6: Write to database
+	p.logger.Info("local.ingestion.incremental.write",
+		"files", len(parseResult.files),
+		"functions", len(parseResult.functions),
+		"types", len(parseResult.types),
+	)
+	writeStart := time.Now()
+
+	mutations := p.datalogBuild.BuildMutationsWithTypes(
+		parseResult.files,
+		parseResult.functions,
+		parseResult.types,
+		parseResult.defines,
+		parseResult.definesTypes,
+		parseResult.calls,
+		parseResult.imports,
+	)
+
+	if err := p.backend.Execute(ctx, mutations); err != nil {
+		return nil, fmt.Errorf("write to local db: %w", err)
+	}
+
+	writeDuration := time.Since(writeStart)
+
+	// Step 7: Update last indexed SHA
+	if err := p.backend.SetLastIndexedSHA(headSHA); err != nil {
+		p.logger.Warn("local.ingestion.incremental.update_sha.error", "err", err)
+	}
+
+	totalDuration := time.Since(startTime)
+	entitiesSent := len(parseResult.files) + len(parseResult.functions) + len(parseResult.types) +
+		len(parseResult.defines) + len(parseResult.definesTypes) + len(parseResult.calls) + len(parseResult.imports)
+
+	result := &IngestionResult{
+		ProjectID:          p.config.ProjectID,
+		RunID:              runID,
+		FilesProcessed:     len(parseResult.files),
+		FunctionsExtracted: len(parseResult.functions),
+		TypesExtracted:     len(parseResult.types),
+		DefinesEdges:       len(parseResult.defines),
+		CallsEdges:         len(parseResult.calls),
+		EntitiesSent:       entitiesSent,
+		ParseErrors:        parseErrors,
+		EmbeddingErrors:    embeddingErrors,
+		ParseDuration:      parseDuration,
+		EmbedDuration:      embedDuration,
+		WriteDuration:      writeDuration,
+		TotalDuration:      totalDuration,
+	}
+
+	p.logger.Info("local.ingestion.incremental.complete",
+		"project_id", p.config.ProjectID,
+		"run_id", runID,
+		"files_changed", len(changedFiles),
+		"files_deleted", len(delta.Deleted),
+		"entities_written", entitiesSent,
+		"total_duration_ms", totalDuration.Milliseconds(),
+	)
+
+	return result, nil
 }
