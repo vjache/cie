@@ -29,7 +29,8 @@ Choose the installation method that works best for you:
 The easiest way to install CIE on macOS or Linux:
 
 ```bash
-brew install kraklabs/cie
+brew tap kraklabs/cie
+brew install cie
 ```
 
 ### Option 2: Install Script

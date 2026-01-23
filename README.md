@@ -35,15 +35,9 @@ CIE indexes your codebase and provides semantic search, call graph analysis, and
 
 | Method | Command |
 |--------|---------|
+| **Homebrew** | `brew tap kraklabs/cie && brew install cie` |
 | **Install Script** | `curl -sSL https://raw.githubusercontent.com/kraklabs/cie/main/install.sh \| sh` |
-| **Homebrew** | `brew install kraklabs/cie` |
 | **GitHub Releases** | [Download binary](https://github.com/kraklabs/cie/releases/latest) |
-
-Then start the infrastructure:
-```bash
-git clone https://github.com/kraklabs/cie.git && cd cie
-cie start
-```
 
 ## Features
 
@@ -104,7 +98,8 @@ Supports Go, Python, JavaScript, TypeScript, and more through Tree-sitter parser
 
 **Homebrew (macOS/Linux):**
 ```bash
-brew install kraklabs/cie
+brew tap kraklabs/cie
+brew install cie
 ```
 
 **Script:**

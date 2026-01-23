@@ -59,7 +59,7 @@ CIE uses CozoDB as its graph engine, which requires a C library. If the binary w
 1. **Install via Homebrew (Recommended):**
    The easiest solution is to install the pre-built binary via Homebrew:
    ```bash
-   brew install kraklabs/cie
+   brew tap kraklabs/cie && brew install cie
    ```
 
 2. **Use the Docker-based approach:**
@@ -140,7 +140,7 @@ CIE uses CozoDB's C bindings (CGO). CGO must be enabled during build. If `CGO_EN
 **Use pre-built binary (Recommended):**
 ```bash
 # Homebrew (no CGO issues)
-brew install kraklabs/cie
+brew tap kraklabs/cie && brew install cie
 ```
 
 **Or build with CGO enabled:**
