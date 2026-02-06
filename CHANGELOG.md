@@ -5,6 +5,14 @@ All notable changes to CIE (Code Intelligence Engine) will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-02-06
+
+### Added
+- **MCP server instructions for AI agents** — CIE now sends comprehensive usage instructions during the MCP `initialize` handshake. Any AI agent connecting via MCP automatically receives guidance on tool selection, recommended workflows, common parameters, and mistakes to avoid — without requiring a CLAUDE.md or external documentation.
+
+### Changed
+- MCP server version bumped to 1.6.0.
+
 ## [0.6.0] - 2026-02-06
 
 ### Added

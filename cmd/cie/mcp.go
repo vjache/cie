@@ -37,9 +37,155 @@ import (
 )
 
 const (
-	mcpVersion    = "1.5.0" // Added git history tools: cie_function_history, cie_find_introduction, cie_blame_function
+	mcpVersion    = "1.6.0" // Added MCP server instructions for AI agents
 	mcpServerName = "cie"
 )
+
+// cieInstructions is the MCP instructions text sent to agents on initialize.
+// It guides AI agents on how to use CIE tools effectively for code intelligence.
+const cieInstructions = `CIE (Code Intelligence Engine) gives you deep understanding of any indexed codebase. It indexes source code into a searchable graph with functions, types, call relationships, and semantic embeddings. Use CIE tools to navigate, search, and analyze code faster than reading files manually.
+
+## CRITICAL: Always Use English for Queries
+
+All CIE tool queries MUST be in English. The keyword boost algorithm matches query terms against English function/type names. Non-English terms will not activate the boost and will produce poor results.
+
+## Quick Reference — Best Tool for Each Task
+
+| Task | Best Tool | Example |
+|------|-----------|---------|
+| Find exact text like '.GET(', 'r.POST(' | cie_grep | text=".GET(" |
+| List HTTP/REST endpoints | cie_list_endpoints | path_pattern="apps/gateway" |
+| Trace call path to a function | cie_trace_path | target="RegisterRoutes" |
+| Semantic/meaning-based search | cie_semantic_search | query="authentication logic" |
+| Architectural questions | cie_analyze | question="What are the entry points?" |
+| Find function by name | cie_find_function | name="BuildRouter" |
+| What calls a function? | cie_find_callers | function_name="HandleAuth" |
+| What does a function call? | cie_find_callees | function_name="HandleAuth" |
+| Get function source code | cie_get_function_code | function_name="BuildRouter" |
+| Find interface implementations | cie_find_implementations | interface_name="Repository" |
+| Find type/interface/struct | cie_find_type | name="UserService" |
+| Explore directory structure | cie_directory_summary | path="internal/cie" |
+| Check index health | cie_index_status | (no args = check entire index) |
+| Function git commit history | cie_function_history | function_name="HandleAuth" |
+| Find when code was introduced | cie_find_introduction | code_snippet="jwt.Generate()" |
+| Function code ownership/blame | cie_blame_function | function_name="Parse" |
+| Verify patterns do NOT exist | cie_verify_absence | patterns=["api_key","secret"] |
+| List gRPC services & RPCs | cie_list_services | path_pattern="api/proto" |
+| Raw CozoScript query | cie_raw_query | (call cie_schema first) |
+
+## Recommended Workflow
+
+Follow this progression for most code exploration tasks:
+
+1. **Orient** — Start with cie_directory_summary or cie_list_files to understand project structure.
+2. **Search** — Use cie_grep for exact text, cie_semantic_search for concepts, or cie_find_function for known names.
+3. **Navigate** — Follow the call graph with cie_find_callers, cie_find_callees, or cie_trace_path.
+4. **Inspect** — Read specific function code with cie_get_function_code (use full_code=true for long functions).
+5. **Analyze** — For architectural questions that span multiple functions, use cie_analyze.
+
+## Tool Categories and When to Use Each
+
+### Text Search Tools (exact matches)
+
+**cie_grep** — Your go-to for finding exact text patterns. Ultra-fast, no regex. Use for:
+- Code patterns: text=".GET(", text="func main", text="import"
+- Multi-pattern batch search: texts=["access_token", "refresh_token", "secret"]
+- Scoping: path="internal/cie", exclude_pattern="_test[.]go"
+
+**cie_search_text** — Regex-capable search within indexed functions. Slower than cie_grep but supports regex. Use for:
+- Complex patterns: pattern="(?i)handler.*error"
+- Searching specific scopes: search_in="signature" (only function signatures)
+- Use literal=true for exact code patterns (avoids regex escaping issues)
+
+**cie_verify_absence** — Security audit tool. Verifies patterns do NOT exist. Returns PASS/FAIL. Use for:
+- Checking for hardcoded secrets: patterns=["api_key", "password", "secret"]
+- Scoping to sensitive areas: path="ui/src"
+
+### Semantic Search Tools (meaning-based)
+
+**cie_semantic_search** — Search by meaning using vector embeddings. Use when you don't know exact function names. Key parameters:
+- query: Natural language description (e.g., "function that handles user authentication")
+- role: Filter by code role — "source" (default, excludes tests), "handler", "router", "entry_point", "test"
+- path_pattern: Scope to directory (e.g., "apps/gateway")
+- exclude_paths: Remove noise (e.g., "metrics|telemetry|dlq")
+- min_similarity: Set threshold (0.7 = high confidence only)
+- Confidence indicators in results: 🟢 High (≥75%), 🟡 Medium (50-75%), 🔴 Low (<50%)
+
+**cie_analyze** — Architectural Q&A with LLM narrative. Use for high-level questions that span multiple functions. Combines semantic search with keyword boosting and generates a narrative answer. Use for:
+- "What are the main entry points?"
+- "How does authentication work?"
+- "What's the architecture of the gateway?"
+- Scope with path_pattern for focused analysis.
+
+### Code Navigation Tools
+
+**cie_find_function** — Find functions by name. Handles Go receiver syntax (searching "Batch" finds "Batcher.Batch"). Use exact_match=true for precise lookups, include_code=true to get source inline.
+
+**cie_get_function_code** — Get full source code of a function. Always use full_code=true for long functions — without it, output may be truncated.
+
+**cie_find_callers** — Who calls this function? Set include_indirect=true for transitive callers (callers of callers).
+
+**cie_find_callees** — What does this function call? Shows all outgoing dependencies.
+
+**cie_get_call_graph** — Combined view: both callers and callees in one call.
+
+**cie_trace_path** — Trace execution path from entry point to target function. Auto-detects entry points (main for Go, index exports for JS/TS, __main__ for Python). Use source parameter to trace between arbitrary functions. Increase max_depth for deeply nested targets.
+
+### Type & Interface Tools
+
+**cie_find_type** — Find types, structs, interfaces, classes by name. Filter by kind: "struct", "interface", "class", "type_alias".
+
+**cie_find_implementations** — Find concrete types that implement an interface. Works for Go (struct method matching) and TypeScript (implements keyword).
+
+### Architecture Discovery Tools
+
+**cie_directory_summary** — Overview of a directory: files with their main exported functions. Start here when exploring an unfamiliar module.
+
+**cie_list_files** — List all indexed files. Filter by language, path, or role. Good for understanding project layout.
+
+**cie_list_functions_in_file** — All functions in a specific file. Useful after finding a file via cie_list_files.
+
+**cie_get_file_summary** — All entities (functions, types, constants) in a file. More detailed than list_functions_in_file.
+
+**cie_list_endpoints** — HTTP/REST endpoints from Go frameworks (Gin, Echo, Chi, Fiber, net/http). Returns [Method] [Path] [Handler] [File].
+
+**cie_list_services** — gRPC service definitions and RPC methods from .proto files.
+
+### Git History Tools
+
+**cie_function_history** — Git commit history for a specific function. Use since="2024-01-01" to filter by date. Use path_pattern to disambiguate functions with the same name in different files.
+
+**cie_find_introduction** — Find the commit that first introduced a code pattern (git pickaxe). Use for understanding when and why code was added.
+
+**cie_blame_function** — Code ownership breakdown by author. Shows who wrote what percentage. Use show_lines=true for line-by-line detail.
+
+### Database Tools
+
+**cie_schema** — Get the CIE database schema, tables, fields, and example queries. Call this FIRST before using cie_raw_query.
+
+**cie_raw_query** — Execute raw CozoScript (Datalog) queries. Powerful but requires knowledge of the schema. Always call cie_schema first.
+
+**cie_index_status** — Check index health. Use this FIRST when searches return no results — the path might not be indexed.
+
+## Common Parameters
+
+Several tools share these parameters:
+
+- **path_pattern**: Regex to scope search to a directory (e.g., "apps/gateway", "internal/cie"). Most tools support this.
+- **exclude_pattern**: Regex to exclude files. Use [.] instead of \. for literal dots (e.g., "_test[.]go" not "_test\.go"). Combine with | for multiple patterns: "_test[.]go|[.]pb[.]go".
+- **role**: Filter by code role. Values: "source" (excludes tests/generated), "test", "generated", "any". Default is usually "source".
+- **limit**: Cap the number of results. Increase if you need more context; decrease for faster responses.
+
+## Common Mistakes to Avoid
+
+1. **Non-English queries** — All queries must be in English. Non-English terms won't match function names.
+2. **Using cie_grep for regex** — cie_grep is literal-only. Use cie_search_text for regex patterns.
+3. **Backslash in exclude_pattern** — Use [.] instead of \. for literal dots. CozoScript handles escaping differently.
+4. **Not using full_code=true** — Long functions get truncated by default. Add full_code=true for complete output.
+5. **Skipping cie_index_status** — When searches return nothing, check the index first. The path might not be indexed.
+6. **Not excluding tests** — Most search tools default to role="source", but cie_grep does not filter by role. Use exclude_pattern="_test[.]go" with cie_grep to skip test files.
+7. **Using cie_analyze for simple lookups** — cie_analyze is slow (calls LLM). Use cie_find_function or cie_grep for direct lookups.
+8. **Not scoping searches** — Broad queries produce noisy results. Use path_pattern to focus on the relevant module.`
 
 // jsonRPCRequest represents a JSON-RPC 2.0 request from the MCP client.
 //
@@ -81,11 +227,12 @@ type mcpCapabilities struct {
 // mcpInitializeResult is the response to the MCP initialize request.
 //
 // Sent during the initial handshake to declare protocol version, capabilities,
-// and server information.
+// server information, and usage instructions for AI agents.
 type mcpInitializeResult struct {
 	ProtocolVersion string          `json:"protocolVersion"`
 	Capabilities    mcpCapabilities `json:"capabilities"`
-	ServerInfo      mcpServerInfo   `json:"serverInfo"` // Server identification
+	ServerInfo      mcpServerInfo   `json:"serverInfo"`     // Server identification
+	Instructions    string          `json:"instructions"`   // Usage instructions for AI agents
 }
 
 // mcpTool describes a single tool exposed by the MCP server.
@@ -1470,6 +1617,7 @@ func (s *mcpServer) handleRequest(ctx context.Context, req jsonRPCRequest) jsonR
 					Name:    mcpServerName,
 					Version: mcpVersion,
 				},
+				Instructions: cieInstructions,
 			},
 		}
 
