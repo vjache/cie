@@ -38,6 +38,7 @@ import (
 	"github.com/kraklabs/cie/internal/errors"
 	"github.com/kraklabs/cie/internal/ui"
 	"github.com/kraklabs/cie/pkg/ingestion"
+	"github.com/kraklabs/cie/pkg/storage"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -141,14 +142,11 @@ Notes:
 	}))
 	slog.SetDefault(logger)
 
-	// Check for existing data
+	// Check for existing data — skip if forced
 	if !*full && !*forceFullReindex {
 		hasData, funcCount, err := checkLocalData(cfg)
 		if err == nil && hasData {
-			fmt.Printf("Project '%s' already has %d functions indexed.\n\n", cfg.ProjectID, funcCount)
-			fmt.Println("Choose indexing mode:")
-			fmt.Println("  cie index --full           Reindex everything from scratch")
-			os.Exit(0)
+			fmt.Printf("Project '%s' already has %d functions indexed.\n", cfg.ProjectID, funcCount)
 		}
 	}
 
@@ -223,9 +221,32 @@ func checkLocalData(cfg *Config) (bool, int, error) {
 		return false, 0, nil
 	}
 
-	// TODO(v0.2): Query CozoDB for actual function count
-	// For now, just check if directory exists
-	return true, -1, nil
+	backend, err := storage.NewEmbeddedBackend(storage.EmbeddedConfig{
+		ProjectID:           cfg.ProjectID,
+		Engine:              "rocksdb",
+		EmbeddingDimensions: cfg.Embedding.Dimensions,
+	})
+	if err != nil {
+		return true, 0, nil // directory exists but can't open DB
+	}
+	defer backend.Close()
+
+	result, err := backend.Query(context.Background(), "?[count(id)] := *cie_function{id}")
+	if err != nil || len(result.Rows) == 0 {
+		return true, 0, nil
+	}
+
+	count := 0
+	if row := result.Rows[0]; len(row) > 0 {
+		if v, ok := row[0].(float64); ok {
+			count = int(v)
+		}
+		if v, ok := row[0].(int); ok {
+			count = v
+		}
+	}
+
+	return true, count, nil
 }
 
 // runLocalIndex executes the local indexing pipeline, writing results to the embedded database.
@@ -393,6 +414,18 @@ func mapEmbeddingProvider(provider string) string {
 // and overall execution time. Used to provide user feedback after indexing completes.
 func printResult(result *ingestion.IngestionResult) {
 	fmt.Println()
+
+	// Detect no-op incremental run (everything up to date)
+	if result.FilesProcessed == 0 && result.FunctionsExtracted == 0 && result.EntitiesSent == 0 {
+		ui.Header("Index Up to Date")
+		fmt.Printf("%s %s\n", ui.Label("Project ID:"), result.ProjectID)
+		_, _ = ui.Green.Println("Everything is already indexed. No changes detected.")
+		fmt.Println()
+		fmt.Println("To force a full re-index:")
+		fmt.Println("  cie index --full")
+		return
+	}
+
 	ui.Header("Indexing Complete")
 	fmt.Printf("%s %s\n", ui.Label("Project ID:"), result.ProjectID)
 
