@@ -201,6 +201,11 @@ func runMCPServer(configPath string) {
 	var mode string
 	var projectID string
 
+	// Warn if CIE_BASE_URL env var is overriding the config
+	if envURL := os.Getenv("CIE_BASE_URL"); envURL != "" && cfg.CIE.EdgeCache == envURL {
+		fmt.Fprintf(os.Stderr, "Note: CIE_BASE_URL=%s is set, using remote mode. Unset it for embedded mode.\n", envURL)
+	}
+
 	if cfg.CIE.EdgeCache == "" {
 		// Embedded mode — open CozoDB directly
 		backend, err := storage.NewEmbeddedBackend(storage.EmbeddedConfig{

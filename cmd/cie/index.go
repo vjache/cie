@@ -201,7 +201,7 @@ Notes:
 		}
 	}
 
-	runLocalIndex(ctx, logger, cfg, cwd, embeddingProvider, *embedWorkers, globals)
+	runLocalIndex(ctx, logger, cfg, cwd, embeddingProvider, *embedWorkers, *full, globals)
 }
 
 // checkLocalData checks if local indexed data exists and returns the function count.
@@ -262,7 +262,7 @@ func checkLocalData(cfg *Config) (bool, int, error) {
 //   - embeddingProvider: Embedding provider name (ollama, nomic, mock)
 //   - embedWorkers: Number of parallel workers for embedding generation
 //   - globals: Global CLI flags for progress/output control
-func runLocalIndex(ctx context.Context, logger *slog.Logger, cfg *Config, repoPath, embeddingProvider string, embedWorkers int, globals GlobalFlags) {
+func runLocalIndex(ctx context.Context, logger *slog.Logger, cfg *Config, repoPath, embeddingProvider string, embedWorkers int, forceReindex bool, globals GlobalFlags) {
 	// Ensure checkpoint directory exists
 	checkpointDir := filepath.Join(ConfigDir(repoPath), "checkpoints")
 	if err := os.MkdirAll(checkpointDir, 0750); err != nil {
@@ -292,6 +292,7 @@ func runLocalIndex(ctx context.Context, logger *slog.Logger, cfg *Config, repoPa
 			MaxFileSizeBytes:     cfg.Indexing.MaxFileSize,
 			CheckpointPath:       checkpointDir,
 			ExcludeGlobs:         excludeGlobs,
+			ForceReindex:         forceReindex,
 			Concurrency: ingestion.ConcurrencyConfig{
 				ParseWorkers: 4,
 				EmbedWorkers: embedWorkers,

@@ -178,9 +178,33 @@ ls ~/.cie/data/<your-project-id>/
 
 If empty, re-run `cie index --full`.
 
+### Corrupted index or want a clean start
+
+Use `cie reset` to delete all indexed data and start fresh:
+
+```bash
+cie reset --yes          # Delete all indexed data for the project
+cie index --full         # Re-index from scratch
+```
+
 ### Old config still references Docker
 
 Run `cie init --force -y` to regenerate the configuration, or manually set `edge_cache: ""` in `.cie/project.yaml`.
+
+### MCP shows "connection refused localhost:9090"
+
+This usually means `CIE_BASE_URL` is set in your environment or MCP configuration, overriding the embedded mode. Check:
+
+```bash
+echo $CIE_BASE_URL       # Should be empty
+```
+
+If set, unset it:
+```bash
+unset CIE_BASE_URL
+```
+
+Also check your MCP configuration file (`.mcp.json`, `.cursor/mcp.json`, or `~/.claude/settings.json`) for a `CIE_BASE_URL` entry in the `env` section and remove it.
 
 ## Related Documentation
 
