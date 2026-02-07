@@ -20,6 +20,8 @@
 package ingestion
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -58,6 +60,9 @@ type CallResolver struct {
 	functionIDToName map[string]string
 	// functionIDToSignature: function_id → full signature string
 	functionIDToSignature map[string]string
+
+	// stubFunctions: synthetic entries for external type methods (e.g., sql.DB.Query)
+	stubFunctions []FunctionEntity
 }
 
 // NewCallResolver creates a new call resolver.
@@ -467,18 +472,18 @@ func (r *CallResolver) resolveInterfaceCallViaFields(call UnresolvedCall, caller
 		return nil
 	}
 
-	var interfaceType string
+	var fieldType string
 	for i := len(parts) - 2; i >= 0; i-- {
 		if ft, ok := fieldTypes[parts[i]]; ok {
-			interfaceType = ft
+			fieldType = ft
 			break
 		}
 	}
-	if interfaceType == "" {
+	if fieldType == "" {
 		return nil
 	}
 
-	return r.resolveToImplementations(call.CallerID, methodName, interfaceType)
+	return r.resolveToImplementations(call.CallerID, methodName, fieldType)
 }
 
 // resolveInterfaceCallViaParams resolves through function parameter types.
@@ -519,24 +524,73 @@ func (r *CallResolver) resolveInterfaceCallViaParams(call UnresolvedCall) []Call
 }
 
 // resolveToImplementations creates call edges from a caller to all implementations
-// of the given interface type's method.
-func (r *CallResolver) resolveToImplementations(callerID, methodName, interfaceType string) []CallsEdge {
-	implTypes, ok := r.implementsIndex[interfaceType]
-	if !ok {
-		return nil
-	}
-
-	var edges []CallsEdge
-	for _, implType := range implTypes {
-		qualifiedName := implType + "." + methodName
-		if calleeID, ok := r.qualifiedFunctions[qualifiedName]; ok {
-			edges = append(edges, CallsEdge{
-				CallerID: callerID,
-				CalleeID: calleeID,
-			})
+// of the given type's method. Handles both interface types (via implementsIndex)
+// and concrete types (direct lookup in qualifiedFunctions).
+// For external types not in the index, generates synthetic stub entries.
+func (r *CallResolver) resolveToImplementations(callerID, methodName, fieldType string) []CallsEdge {
+	// 1. Try interface dispatch: fieldType is an interface with known implementors
+	implTypes, ok := r.implementsIndex[fieldType]
+	if ok {
+		var edges []CallsEdge
+		for _, implType := range implTypes {
+			qualifiedName := implType + "." + methodName
+			if calleeID, ok := r.qualifiedFunctions[qualifiedName]; ok {
+				edges = append(edges, CallsEdge{
+					CallerID: callerID,
+					CalleeID: calleeID,
+				})
+			}
+		}
+		if len(edges) > 0 {
+			return edges
 		}
 	}
-	return edges
+
+	// 2. Concrete type fallback: fieldType is a concrete type (e.g., CozoDB)
+	qualifiedName := fieldType + "." + methodName
+	if calleeID, ok := r.qualifiedFunctions[qualifiedName]; ok {
+		return []CallsEdge{{CallerID: callerID, CalleeID: calleeID}}
+	}
+
+	// 3. External type stub: type not in index (e.g., sql.DB, http.Client)
+	// Skip primitive/builtin types that can't have methods
+	if isPrimitiveOrBuiltinType(fieldType) {
+		return nil
+	}
+	stubID := generateExternalStubID(fieldType, methodName)
+	r.qualifiedFunctions[qualifiedName] = stubID
+	r.stubFunctions = append(r.stubFunctions, FunctionEntity{
+		ID:       stubID,
+		Name:     qualifiedName,
+		FilePath: "<external>",
+	})
+	return []CallsEdge{{CallerID: callerID, CalleeID: stubID}}
+}
+
+// StubFunctions returns synthetic function entries generated for external type methods.
+func (r *CallResolver) StubFunctions() []FunctionEntity {
+	return r.stubFunctions
+}
+
+// generateExternalStubID creates a deterministic ID for an external type method stub.
+func generateExternalStubID(typeName, methodName string) string {
+	h := sha256.Sum256([]byte("_external_:" + typeName + "." + methodName))
+	return hex.EncodeToString(h[:16])
+}
+
+// isPrimitiveOrBuiltinType returns true for Go primitive types, builtin types,
+// and common standard library types that should not generate external stubs.
+func isPrimitiveOrBuiltinType(t string) bool {
+	switch t {
+	case "string", "int", "int8", "int16", "int32", "int64",
+		"uint", "uint8", "uint16", "uint32", "uint64",
+		"float32", "float64", "complex64", "complex128",
+		"bool", "byte", "rune", "error", "func",
+		"any", "interface{}",
+		"Context": // context.Context is common but not user-defined
+		return true
+	}
+	return false
 }
 
 // Stats returns statistics about the resolver's index.

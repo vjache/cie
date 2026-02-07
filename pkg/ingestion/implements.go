@@ -9,6 +9,24 @@ import (
 // Captures the method name from lines like "Write(data []byte) error" or "Flush() error".
 var interfaceMethodPattern = regexp.MustCompile(`(?m)^\s*([A-Z][a-zA-Z0-9_]*)\s*\(`)
 
+// embeddedInterfacePattern matches embedded interface references inside interface bodies.
+// Captures lines like "io.Reader", "Writer", or "fmt.Stringer" (bare type on its own line).
+var embeddedInterfacePattern = regexp.MustCompile(`(?m)^\s+(\w+(?:\.\w+)?)\s*$`)
+
+// stdlibInterfaceMethods maps common Go stdlib interface names to their methods.
+// This allows resolving embedded stdlib interfaces (e.g., io.Reader) that aren't
+// in the project's index. Only includes commonly-used interfaces.
+var stdlibInterfaceMethods = map[string][]string{
+	"Reader":    {"Read"},
+	"Writer":    {"Write"},
+	"Closer":    {"Close"},
+	"Seeker":    {"Seek"},
+	"Stringer":  {"String"},
+	"Error":     {"Error"},
+	"Handler":   {"ServeHTTP"},
+	"Marshaler": {"MarshalJSON"},
+}
+
 // BuildImplementsIndex determines which concrete types implement which interfaces
 // by matching method sets. A concrete type implements an interface if it has all
 // methods declared by that interface.
@@ -55,27 +73,85 @@ type interfaceInfo struct {
 }
 
 // extractInterfaceMethods extracts method names from interface type definitions.
+// Uses a two-pass approach to resolve embedded interfaces:
+//  1. First pass: extract explicit method declarations from all interfaces
+//  2. Second pass: resolve embedded interface references and inherit their methods
 func extractInterfaceMethods(types []TypeEntity) []interfaceInfo {
-	var result []interfaceInfo
-
+	// First pass: extract direct methods from all interfaces
+	directMethods := make(map[string][]string) // name → method names
 	for _, t := range types {
 		if t.Kind != "interface" {
 			continue
 		}
 		methods := interfaceMethodPattern.FindAllStringSubmatch(t.CodeText, -1)
-		var methodNames []string
+		var names []string
 		for _, m := range methods {
 			if len(m) > 1 {
-				methodNames = append(methodNames, m[1])
+				names = append(names, m[1])
 			}
+		}
+		directMethods[t.Name] = names
+	}
+
+	// Second pass: resolve embedded interfaces and inherit methods
+	var result []interfaceInfo
+	for _, t := range types {
+		if t.Kind != "interface" {
+			continue
+		}
+		allMethods := collectAllMethods(t, directMethods)
+		var methodList []string
+		for m := range allMethods {
+			methodList = append(methodList, m)
 		}
 		result = append(result, interfaceInfo{
 			name:    t.Name,
-			methods: methodNames,
+			methods: methodList,
 		})
 	}
 
 	return result
+}
+
+// collectAllMethods gathers all methods for an interface, including those
+// inherited from embedded interfaces (project-local or stdlib).
+func collectAllMethods(t TypeEntity, directMethods map[string][]string) map[string]bool {
+	allMethods := make(map[string]bool)
+	for _, m := range directMethods[t.Name] {
+		allMethods[m] = true
+	}
+
+	embeds := embeddedInterfacePattern.FindAllStringSubmatch(t.CodeText, -1)
+	for _, embed := range embeds {
+		baseName := stripPackagePrefix(embed[1])
+		inheritMethods(allMethods, baseName, directMethods)
+	}
+	return allMethods
+}
+
+// stripPackagePrefix removes a package qualifier from a type reference.
+// "io.Reader" → "Reader", "Writer" → "Writer".
+func stripPackagePrefix(ref string) string {
+	if idx := strings.LastIndex(ref, "."); idx >= 0 {
+		return ref[idx+1:]
+	}
+	return ref
+}
+
+// inheritMethods adds methods from the named interface into the target set.
+// Checks project-local interfaces first, then falls back to known stdlib interfaces.
+func inheritMethods(target map[string]bool, name string, directMethods map[string][]string) {
+	if methods, ok := directMethods[name]; ok {
+		for _, m := range methods {
+			target[m] = true
+		}
+		return
+	}
+	if methods, ok := stdlibInterfaceMethods[name]; ok {
+		for _, m := range methods {
+			target[m] = true
+		}
+	}
 }
 
 // buildTypeMethodSets builds a map of concrete type → set of method names

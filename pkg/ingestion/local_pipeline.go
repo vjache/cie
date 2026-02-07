@@ -341,9 +341,16 @@ func (p *LocalPipeline) Run(ctx context.Context) (*IngestionResult, error) {
 		resolvedCalls := resolver.ResolveCalls(allUnresolvedCalls)
 		allCalls = append(allCalls, resolvedCalls...)
 
+		// Collect synthetic stubs for external type methods
+		stubFunctions := resolver.StubFunctions()
+		if len(stubFunctions) > 0 {
+			allFunctions = append(allFunctions, stubFunctions...)
+		}
+
 		p.logger.Info("local.ingestion.cross_package_calls.resolved",
 			"local_calls", len(allCalls)-len(resolvedCalls),
 			"cross_package_resolved", len(resolvedCalls),
+			"external_stubs", len(stubFunctions),
 		)
 	}
 
@@ -836,6 +843,12 @@ func (p *LocalPipeline) processIncrementalFiles(ctx context.Context, incCtx *inc
 		resolver.SetInterfaceIndex(parseResult.fields, incImplements)
 		resolvedCalls := resolver.ResolveCalls(parseResult.unresolvedCalls)
 		parseResult.calls = append(parseResult.calls, resolvedCalls...)
+
+		// Collect synthetic stubs for external type methods
+		stubFunctions := resolver.StubFunctions()
+		if len(stubFunctions) > 0 {
+			parseResult.functions = append(parseResult.functions, stubFunctions...)
+		}
 	}
 
 	// Embed
