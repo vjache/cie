@@ -278,7 +278,8 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
 				*cie_implements { interface_name, type_name: impl_type },
 				impl_prefix = concat(impl_type, "."),
 				*cie_function { name: callee_name, file_path: callee_file, start_line: callee_line },
-				starts_with(callee_name, impl_prefix)
+				starts_with(callee_name, impl_prefix),
+				not regex_matches(callee_file, "_test[.]go$")
 			:limit 50`,
 			args.FunctionName, structName,
 		)
@@ -305,12 +306,11 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
 		}
 	}
 
-	// Parameter-based interface dispatch
-	if structName == "" || len(result.Rows) == 0 {
-		paramCallees := findCalleesViaParams(ctx, client, args.FunctionName)
-		if paramCallees != nil && len(paramCallees.Rows) > 0 {
-			result = mergeQueryResults(result, paramCallees)
-		}
+	// Parameter-based interface dispatch — always run, methods can have both
+	// field-based callees and parameter-based interface calls.
+	paramCallees := findCalleesViaParams(ctx, client, args.FunctionName)
+	if paramCallees != nil && len(paramCallees.Rows) > 0 {
+		result = mergeQueryResults(result, paramCallees)
 	}
 
 	return NewResult(FormatQueryResult(result, script)), nil
@@ -351,7 +351,8 @@ func findCalleesViaParams(ctx context.Context, client Querier, funcName string) 
 				(interface_name = %q or ends_with(interface_name, %q)),
 				impl_prefix = concat(impl_type, "."),
 				*cie_function { name: callee_name, file_path: callee_file, start_line: callee_line },
-				starts_with(callee_name, impl_prefix)
+				starts_with(callee_name, impl_prefix),
+				not regex_matches(callee_file, "_test[.]go$")
 			:limit 50`,
 			funcName, p.Type, "."+p.Type,
 		)

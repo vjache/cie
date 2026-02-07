@@ -533,7 +533,8 @@ func getCallees(ctx context.Context, client Querier, funcName string) []TraceFun
 				*cie_implements { interface_name, type_name: impl_type },
 				impl_prefix = concat(impl_type, "."),
 				*cie_function { name: callee_name, file_path: callee_file, start_line: callee_line },
-				starts_with(callee_name, impl_prefix)
+				starts_with(callee_name, impl_prefix),
+				not regex_matches(callee_file, "_test[.]go$")
 			:limit 50`,
 			structName,
 		)
@@ -583,9 +584,10 @@ func getCallees(ctx context.Context, client Querier, funcName string) []TraceFun
 		}
 	}
 
-	// 3. Parameter-based interface dispatch (safety net for pre-fix indexes)
-	// For standalone functions or methods where field dispatch found nothing extra,
-	// query the function's signature, parse params, and resolve interface types.
+	// 3. Parameter-based interface dispatch
+	// Always run: a method can have BOTH field-based callees (Phase 2) AND
+	// parameter-based interface calls. Skipping this when Phase 1/2 found results
+	// breaks trace chains like Client.StoreFact(writer Writer) → writer.Execute().
 	// Collect direct callee names from Phase 1 for fan-out filtering.
 	directCalleeNames := make(map[string]bool)
 	for _, c := range ret {
@@ -596,10 +598,8 @@ func getCallees(ctx context.Context, client Querier, funcName string) []TraceFun
 			directCalleeNames[c.Name] = true
 		}
 	}
-	if structName == "" || len(ret) == 0 {
-		paramCallees := getCalleesViaParams(ctx, client, funcName, seen, directCalleeNames)
-		ret = append(ret, paramCallees...)
-	}
+	paramCallees := getCalleesViaParams(ctx, client, funcName, seen, directCalleeNames)
+	ret = append(ret, paramCallees...)
 
 	return ret
 }
@@ -636,14 +636,15 @@ func getCalleesViaParams(ctx context.Context, client Querier, funcName string, s
 			continue
 		}
 
-		// Query implementations of this type
+		// Query implementations of this type (exclude test files)
 		implScript := fmt.Sprintf(
 			`?[callee_name, callee_file, callee_line] :=
 				*cie_implements { interface_name, type_name: impl_type },
 				(interface_name = %q or ends_with(interface_name, %q)),
 				impl_prefix = concat(impl_type, "."),
 				*cie_function { name: callee_name, file_path: callee_file, start_line: callee_line },
-				starts_with(callee_name, impl_prefix)
+				starts_with(callee_name, impl_prefix),
+				not regex_matches(callee_file, "_test[.]go$")
 			:limit 50`,
 			p.Type, "."+p.Type,
 		)
