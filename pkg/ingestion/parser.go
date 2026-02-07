@@ -99,6 +99,9 @@ type ParseResult struct {
 	// Types contains all types/interfaces/classes/structs extracted from the file.
 	Types []TypeEntity
 
+	// Fields contains struct field entities with their types (for interface dispatch resolution).
+	Fields []FieldEntity
+
 	// Defines contains edges connecting the file to its functions.
 	Defines []DefinesEdge
 

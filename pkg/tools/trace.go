@@ -326,10 +326,11 @@ func findFunctionsByName(ctx context.Context, client Querier, name, pathPattern 
 	return ret
 }
 
-// getCallees returns functions called by the given function
+// getCallees returns functions called by the given function.
+// Includes both direct call edges (cie_calls) and interface dispatch
+// (cie_field + cie_implements → concrete method implementations).
 func getCallees(ctx context.Context, client Querier, funcName string) []TraceFuncInfo {
-	// Join cie_calls with cie_function to get callee details
-	// Match caller by exact name or suffix (for methods like Struct.Method)
+	// 1. Direct callees via cie_calls
 	script := fmt.Sprintf(
 		`?[callee_name, callee_file, callee_line] :=
 			*cie_calls { caller_id, callee_id },
@@ -345,15 +346,60 @@ func getCallees(ctx context.Context, client Querier, funcName string) []TraceFun
 		return nil
 	}
 
+	seen := make(map[string]bool)
 	var ret []TraceFuncInfo
 	for _, row := range result.Rows {
+		name := AnyToString(row[0])
+		seen[name] = true
 		ret = append(ret, TraceFuncInfo{
-			Name:     AnyToString(row[0]),
+			Name:     name,
 			FilePath: AnyToString(row[1]),
 			Line:     AnyToString(row[2]),
 		})
 	}
+
+	// 2. Interface dispatch callees
+	// If the caller is a method (e.g., "Builder.Build"), find its struct's
+	// interface-typed fields and resolve to concrete implementations
+	structName := extractStructName(funcName)
+	if structName != "" {
+		dispatchScript := fmt.Sprintf(
+			`?[callee_name, callee_file, callee_line] :=
+				*cie_field { struct_name: %q, field_type },
+				*cie_implements { interface_name: field_type, type_name: impl_type },
+				*cie_function { name: callee_name, file_path: callee_file, start_line: callee_line },
+				starts_with(callee_name, impl_type),
+				regex_matches(callee_name, "[.]")
+			:limit 50`,
+			structName,
+		)
+
+		dispatchResult, err := client.Query(ctx, dispatchScript)
+		if err == nil {
+			for _, row := range dispatchResult.Rows {
+				name := AnyToString(row[0])
+				if !seen[name] {
+					seen[name] = true
+					ret = append(ret, TraceFuncInfo{
+						Name:     name,
+						FilePath: AnyToString(row[1]),
+						Line:     AnyToString(row[2]),
+					})
+				}
+			}
+		}
+	}
+
 	return ret
+}
+
+// extractStructName extracts the struct name from a qualified method name.
+// e.g., "Builder.Build" → "Builder", "main" → ""
+func extractStructName(funcName string) string {
+	if idx := strings.Index(funcName, "."); idx > 0 {
+		return funcName[:idx]
+	}
+	return ""
 }
 
 // formatSources formats the source list for display

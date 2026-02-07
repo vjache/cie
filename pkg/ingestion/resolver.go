@@ -46,6 +46,16 @@ type CallResolver struct {
 	// importPathToPackagePath: import_path → local package path
 	// Maps Go import paths to local directory paths
 	importPathToPackagePath map[string]string
+
+	// Interface dispatch resolution indexes
+	// fieldIndex: structName → fieldName → fieldType
+	fieldIndex map[string]map[string]string
+	// implementsIndex: interfaceName → []typeName
+	implementsIndex map[string][]string
+	// qualifiedFunctions: "TypeName.MethodName" → function_id
+	qualifiedFunctions map[string]string
+	// functionIDToName: function_id → function_name
+	functionIDToName map[string]string
 }
 
 // NewCallResolver creates a new call resolver.
@@ -55,6 +65,10 @@ func NewCallResolver() *CallResolver {
 		globalFunctions:         make(map[string]map[string]string),
 		fileImports:             make(map[string]map[string]string),
 		importPathToPackagePath: make(map[string]string),
+		fieldIndex:              make(map[string]map[string]string),
+		implementsIndex:         make(map[string][]string),
+		qualifiedFunctions:      make(map[string]string),
+		functionIDToName:        make(map[string]string),
 	}
 }
 
@@ -84,7 +98,7 @@ func (r *CallResolver) BuildIndex(
 		r.packageIndex[pkgPath].Files = append(r.packageIndex[pkgPath].Files, f.Path)
 	}
 
-	// 2. Build global function registry
+	// 2. Build global function registry and qualified function index
 	for _, fn := range functions {
 		if !strings.HasSuffix(fn.FilePath, ".go") {
 			continue
@@ -101,6 +115,12 @@ func (r *CallResolver) BuildIndex(
 		// Only store exported functions (starts with uppercase)
 		// Also store all functions for same-package resolution
 		r.globalFunctions[pkgPath][simpleName] = fn.ID
+
+		// Build qualified function index for interface dispatch
+		if strings.Contains(fn.Name, ".") {
+			r.qualifiedFunctions[fn.Name] = fn.ID
+		}
+		r.functionIDToName[fn.ID] = fn.Name
 	}
 
 	// 3. Build file imports index
@@ -173,6 +193,16 @@ func (r *CallResolver) resolveCallsSequential(unresolvedCalls []UnresolvedCall) 
 					CalleeID: calleeID,
 				})
 			}
+		} else {
+			// Fallback: try interface dispatch resolution
+			ifaceEdges := r.resolveInterfaceCall(call)
+			for _, edge := range ifaceEdges {
+				edgeKey := edge.CallerID + "->" + edge.CalleeID
+				if !seen[edgeKey] {
+					seen[edgeKey] = true
+					resolved = append(resolved, edge)
+				}
+			}
 		}
 	}
 
@@ -210,6 +240,15 @@ func (r *CallResolver) resolveCallsParallel(unresolvedCalls []UnresolvedCall) []
 					results <- resolveResult{
 						callerID: call.CallerID,
 						calleeID: calleeID,
+					}
+				} else {
+					// Fallback: try interface dispatch resolution
+					ifaceEdges := r.resolveInterfaceCall(call)
+					for _, edge := range ifaceEdges {
+						results <- resolveResult{
+							callerID: edge.CallerID,
+							calleeID: edge.CalleeID,
+						}
 					}
 				}
 			}
@@ -355,6 +394,74 @@ func (r *CallResolver) findPackageByImportPath(importPath string) string {
 	}
 
 	return ""
+}
+
+// SetInterfaceIndex populates the field and implements indexes for interface dispatch resolution.
+// Must be called after BuildIndex and before ResolveCalls.
+func (r *CallResolver) SetInterfaceIndex(fields []FieldEntity, implements []ImplementsEdge) {
+	// Build fieldIndex: structName → fieldName → fieldType
+	for _, f := range fields {
+		if r.fieldIndex[f.StructName] == nil {
+			r.fieldIndex[f.StructName] = make(map[string]string)
+		}
+		r.fieldIndex[f.StructName][f.FieldName] = f.FieldType
+	}
+
+	// Build implementsIndex: interfaceName → []typeName
+	implMap := make(map[string][]string)
+	for _, e := range implements {
+		implMap[e.InterfaceName] = append(implMap[e.InterfaceName], e.TypeName)
+	}
+	r.implementsIndex = implMap
+}
+
+// resolveInterfaceCall resolves a call like "field.Method" through interface dispatch.
+// Returns multiple CallsEdge (one per implementing type) or nil if resolution fails.
+func (r *CallResolver) resolveInterfaceCall(call UnresolvedCall) []CallsEdge {
+	if !strings.Contains(call.CalleeName, ".") {
+		return nil
+	}
+
+	parts := strings.SplitN(call.CalleeName, ".", 2)
+	fieldName := parts[0]
+	methodName := parts[1]
+
+	// Get the caller's struct name from its function name (e.g., "Builder.Build" → "Builder")
+	callerName := r.functionIDToName[call.CallerID]
+	if !strings.Contains(callerName, ".") {
+		return nil
+	}
+	structName := strings.SplitN(callerName, ".", 2)[0]
+
+	// Look up the field type
+	fieldTypes, ok := r.fieldIndex[structName]
+	if !ok {
+		return nil
+	}
+	interfaceType, ok := fieldTypes[fieldName]
+	if !ok {
+		return nil
+	}
+
+	// Look up implementing types
+	implTypes, ok := r.implementsIndex[interfaceType]
+	if !ok {
+		return nil
+	}
+
+	// Create call edges to each implementation
+	var edges []CallsEdge
+	for _, implType := range implTypes {
+		qualifiedName := implType + "." + methodName
+		if calleeID, ok := r.qualifiedFunctions[qualifiedName]; ok {
+			edges = append(edges, CallsEdge{
+				CallerID: call.CallerID,
+				CalleeID: calleeID,
+			})
+		}
+	}
+
+	return edges
 }
 
 // Stats returns statistics about the resolver's index.

@@ -187,6 +187,10 @@ func (b *EmbeddedBackend) EnsureSchema() error {
 		`:create cie_type_code { type_id: String => code_text: String }`,
 		fmt.Sprintf(`:create cie_type_embedding { type_id: String => embedding: <F32; %d> }`, dim),
 		`:create cie_defines_type { id: String => file_id: String, type_id: String }`,
+		// Struct field entities for interface dispatch resolution
+		`:create cie_field { id: String => struct_name: String, field_name: String, field_type: String, file_path: String, line: Int }`,
+		// Implements edges: concrete type -> interface
+		`:create cie_implements { id: String => type_name: String, interface_name: String, file_path: String }`,
 		// Project metadata for incremental indexing
 		`:create cie_project_meta { key: String => value: String }`,
 	}

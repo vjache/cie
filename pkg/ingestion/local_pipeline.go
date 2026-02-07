@@ -119,6 +119,7 @@ type parseFilesResult struct {
 	files           []FileEntity
 	functions       []FunctionEntity
 	types           []TypeEntity
+	fields          []FieldEntity
 	defines         []DefinesEdge
 	definesTypes    []DefinesTypeEdge
 	calls           []CallsEdge
@@ -324,10 +325,19 @@ func (p *LocalPipeline) Run(ctx context.Context) (*IngestionResult, error) {
 	allUnresolvedCalls := parseResult.unresolvedCalls
 	packageNames := parseResult.packageNames
 
-	// Step 2b: Resolve cross-package calls
+	// Step 2b: Build implements index and resolve cross-package calls
+	allFields := parseResult.fields
+	allImplements := BuildImplementsIndex(allTypes, allFunctions)
+
+	p.logger.Info("local.ingestion.interface_dispatch",
+		"fields", len(allFields),
+		"implements", len(allImplements),
+	)
+
 	if len(allUnresolvedCalls) > 0 {
 		resolver := NewCallResolver()
 		resolver.BuildIndex(allFiles, allFunctions, allImports, packageNames)
+		resolver.SetInterfaceIndex(allFields, allImplements)
 		resolvedCalls := resolver.ResolveCalls(allUnresolvedCalls)
 		allCalls = append(allCalls, resolvedCalls...)
 
@@ -420,6 +430,10 @@ func (p *LocalPipeline) Run(ctx context.Context) (*IngestionResult, error) {
 		allImports,
 	)
 
+	// Generate field and implements mutations
+	fieldImplMutations := p.datalogBuild.BuildFieldAndImplementsMutations(allFields, allImplements)
+	mutations += fieldImplMutations
+
 	// Execute mutations
 	if err := p.backend.Execute(ctx, mutations); err != nil {
 		return nil, fmt.Errorf("write to local db: %w", err)
@@ -429,7 +443,8 @@ func (p *LocalPipeline) Run(ctx context.Context) (*IngestionResult, error) {
 	totalDuration := time.Since(startTime)
 
 	entitiesSent := len(allFiles) + len(allFunctions) + len(allTypes) +
-		len(allDefines) + len(allDefinesTypes) + len(allCalls) + len(allImports)
+		len(allDefines) + len(allDefinesTypes) + len(allCalls) + len(allImports) +
+		len(allFields) + len(allImplements)
 
 	p.logger.Info("local.ingestion.write.complete",
 		"entities_written", entitiesSent,
@@ -585,6 +600,7 @@ func (p *LocalPipeline) parseFilesParallel(ctx context.Context, files []FileInfo
 		result.files = append(result.files, pr.File)
 		result.functions = append(result.functions, pr.Functions...)
 		result.types = append(result.types, pr.Types...)
+		result.fields = append(result.fields, pr.Fields...)
 		result.defines = append(result.defines, pr.Defines...)
 		result.definesTypes = append(result.definesTypes, pr.DefinesTypes...)
 		result.calls = append(result.calls, pr.Calls...)
@@ -622,6 +638,7 @@ func (p *LocalPipeline) parseFilesSequential(ctx context.Context, files []FileIn
 		result.files = append(result.files, pr.File)
 		result.functions = append(result.functions, pr.Functions...)
 		result.types = append(result.types, pr.Types...)
+		result.fields = append(result.fields, pr.Fields...)
 		result.defines = append(result.defines, pr.Defines...)
 		result.definesTypes = append(result.definesTypes, pr.DefinesTypes...)
 		result.calls = append(result.calls, pr.Calls...)
@@ -810,10 +827,13 @@ func (p *LocalPipeline) processIncrementalFiles(ctx context.Context, incCtx *inc
 	parseResult, parseErrors := p.parseFilesParallel(ctx, changedFiles, parseWorkers)
 	parseDuration := time.Since(parseStart)
 
-	// Resolve cross-package calls
+	// Build implements index and resolve cross-package calls
+	incImplements := BuildImplementsIndex(parseResult.types, parseResult.functions)
+
 	if len(parseResult.unresolvedCalls) > 0 {
 		resolver := NewCallResolver()
 		resolver.BuildIndex(parseResult.files, parseResult.functions, parseResult.imports, parseResult.packageNames)
+		resolver.SetInterfaceIndex(parseResult.fields, incImplements)
 		resolvedCalls := resolver.ResolveCalls(parseResult.unresolvedCalls)
 		parseResult.calls = append(parseResult.calls, resolvedCalls...)
 	}
@@ -852,6 +872,10 @@ func (p *LocalPipeline) processIncrementalFiles(ctx context.Context, incCtx *inc
 		parseResult.defines, parseResult.definesTypes, parseResult.calls, parseResult.imports,
 	)
 
+	// Add field and implements mutations
+	fieldImplMutations := p.datalogBuild.BuildFieldAndImplementsMutations(parseResult.fields, incImplements)
+	mutations += fieldImplMutations
+
 	if err := p.backend.Execute(ctx, mutations); err != nil {
 		return nil, fmt.Errorf("write to local db: %w", err)
 	}
@@ -864,7 +888,8 @@ func (p *LocalPipeline) processIncrementalFiles(ctx context.Context, incCtx *inc
 
 	totalDuration := time.Since(incCtx.startTime)
 	entitiesSent := len(parseResult.files) + len(parseResult.functions) + len(parseResult.types) +
-		len(parseResult.defines) + len(parseResult.definesTypes) + len(parseResult.calls) + len(parseResult.imports)
+		len(parseResult.defines) + len(parseResult.definesTypes) + len(parseResult.calls) + len(parseResult.imports) +
+		len(parseResult.fields) + len(incImplements)
 
 	result := &IngestionResult{
 		ProjectID:          p.config.ProjectID,

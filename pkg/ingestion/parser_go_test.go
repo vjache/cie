@@ -435,6 +435,45 @@ func TestGoParser_DefinesEdges(t *testing.T) {
 	}
 }
 
+// TestGoParser_StructFields tests struct field extraction for interface dispatch.
+func TestGoParser_StructFields(t *testing.T) {
+	result := parseTestFile(t, "testdata/go/interface_dispatch.go")
+
+	// Should extract fields from Builder struct: writer (Writer) and reader (*Reader)
+	// "name" field is type "string" (builtin) → should be skipped
+	require.NotNil(t, result.Fields, "Fields should not be nil")
+
+	fieldMap := make(map[string]FieldEntity)
+	for _, f := range result.Fields {
+		fieldMap[f.StructName+"."+f.FieldName] = f
+	}
+
+	// writer field should be extracted with type Writer
+	writerField, ok := fieldMap["Builder.writer"]
+	require.True(t, ok, "Should extract Builder.writer field, got fields: %v", result.Fields)
+	assert.Equal(t, "Builder", writerField.StructName)
+	assert.Equal(t, "writer", writerField.FieldName)
+	assert.Equal(t, "Writer", writerField.FieldType)
+
+	// reader field should be extracted with pointer stripped → Reader
+	readerField, ok := fieldMap["Builder.reader"]
+	require.True(t, ok, "Should extract Builder.reader field, got fields: %v", result.Fields)
+	assert.Equal(t, "Reader", readerField.FieldType, "Should strip pointer from *Reader")
+
+	// name field (type string) should NOT be extracted
+	_, hasName := fieldMap["Builder.name"]
+	assert.False(t, hasName, "Should skip builtin type field 'name string'")
+}
+
+// TestGoParser_StructFields_SkipsEmbedded verifies that embedded fields have no empty FieldName.
+func TestGoParser_StructFields_SkipsEmbedded(t *testing.T) {
+	result := parseTestFile(t, "testdata/go/interface_dispatch.go")
+
+	for _, f := range result.Fields {
+		assert.NotEmpty(t, f.FieldName, "No field entity should have an empty FieldName (embedded fields should be skipped)")
+	}
+}
+
 // TestGoParser_DefinesTypeEdges tests that file->type relationships are created.
 func TestGoParser_DefinesTypeEdges(t *testing.T) {
 	result := parseTestFile(t, "testdata/go/interface_impl.go")

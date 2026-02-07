@@ -134,6 +134,46 @@ type PackageInfo struct {
 	Files       []string // Files that belong to this package
 }
 
+// FieldEntity represents a struct field with its type, used for interface dispatch resolution.
+// When a struct has a field of an interface type, calls through that field can be resolved
+// to concrete implementations.
+type FieldEntity struct {
+	StructName string // e.g., "Builder"
+	FieldName  string // e.g., "writer"
+	FieldType  string // Base type name, no pointer/slice (e.g., "Writer")
+	FilePath   string
+	Line       int
+}
+
+// ImplementsEdge represents that a concrete type implements an interface.
+// Built by matching method sets: if a struct has all methods declared by an interface,
+// it implements that interface.
+type ImplementsEdge struct {
+	TypeName      string // e.g., "CozoDB"
+	InterfaceName string // e.g., "Writer"
+	FilePath      string // File containing the concrete type
+}
+
+// GenerateFieldID generates a deterministic ID for a field entity.
+func GenerateFieldID(filePath, structName, fieldName string) string {
+	h := sha256.New()
+	h.Write([]byte(filePath))
+	h.Write([]byte("|"))
+	h.Write([]byte(structName))
+	h.Write([]byte("|"))
+	h.Write([]byte(fieldName))
+	return "fld:" + hex.EncodeToString(h.Sum(nil))[:16]
+}
+
+// GenerateImplementsID generates a deterministic ID for an implements edge.
+func GenerateImplementsID(typeName, interfaceName string) string {
+	h := sha256.New()
+	h.Write([]byte(typeName))
+	h.Write([]byte("|"))
+	h.Write([]byte(interfaceName))
+	return "impl:" + hex.EncodeToString(h.Sum(nil))[:16]
+}
+
 // DatalogSchema returns the Datalog schema definition for all ingestion tables.
 // Schema v3: Vertically partitioned for performance on large datasets.
 func DatalogSchema() string {
@@ -226,6 +266,24 @@ func DatalogSchema() string {
 :create cie_defines_type {
 	file_id: String,
 	type_id: String =>
+}
+
+// Struct field entities: tracks typed fields for interface dispatch resolution
+:create cie_field {
+	id: String =>
+	struct_name: String,
+	field_name: String,
+	field_type: String,
+	file_path: String,
+	line: Int
+}
+
+// Implements edges: concrete type -> interface (type implements interface)
+:create cie_implements {
+	id: String =>
+	type_name: String,
+	interface_name: String,
+	file_path: String
 }
 `
 }

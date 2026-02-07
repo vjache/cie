@@ -225,6 +225,151 @@ func TestCallResolver_ResolveCalls_AliasedImport(t *testing.T) {
 	}
 }
 
+func TestCallResolver_ResolveInterfaceFieldCall(t *testing.T) {
+	// Setup: Builder.Build calls b.writer.Write() where writer is type Writer
+	// CozoDB implements Writer
+
+	files := []FileEntity{
+		{ID: "file:store.go", Path: "internal/store/store.go", Language: "go"},
+	}
+	functions := []FunctionEntity{
+		{ID: "fn:Builder.Build", Name: "Builder.Build", FilePath: "internal/store/store.go"},
+		{ID: "fn:CozoDB.Write", Name: "CozoDB.Write", FilePath: "internal/store/store.go"},
+	}
+	imports := []ImportEntity{}
+	packageNames := map[string]string{
+		"internal/store/store.go": "store",
+	}
+
+	fields := []FieldEntity{
+		{StructName: "Builder", FieldName: "writer", FieldType: "Writer", FilePath: "internal/store/store.go"},
+	}
+	implements := []ImplementsEdge{
+		{TypeName: "CozoDB", InterfaceName: "Writer", FilePath: "internal/store/store.go"},
+	}
+
+	// Unresolved call: writer.Write from Builder.Build
+	unresolvedCalls := []UnresolvedCall{
+		{
+			CallerID:   "fn:Builder.Build",
+			CalleeName: "writer.Write",
+			FilePath:   "internal/store/store.go",
+			Line:       10,
+		},
+	}
+
+	resolver := NewCallResolver()
+	resolver.BuildIndex(files, functions, imports, packageNames)
+	resolver.SetInterfaceIndex(fields, implements)
+
+	resolvedCalls := resolver.ResolveCalls(unresolvedCalls)
+
+	if len(resolvedCalls) != 1 {
+		t.Fatalf("expected 1 resolved call via interface dispatch, got %d", len(resolvedCalls))
+	}
+	if resolvedCalls[0].CallerID != "fn:Builder.Build" {
+		t.Errorf("expected caller fn:Builder.Build, got %s", resolvedCalls[0].CallerID)
+	}
+	if resolvedCalls[0].CalleeID != "fn:CozoDB.Write" {
+		t.Errorf("expected callee fn:CozoDB.Write, got %s", resolvedCalls[0].CalleeID)
+	}
+}
+
+func TestCallResolver_ResolveInterfaceFieldCall_MultipleImpls(t *testing.T) {
+	// Writer implemented by CozoDB and FileStore → produces 2 CallsEdge
+
+	files := []FileEntity{
+		{ID: "file:store.go", Path: "internal/store/store.go", Language: "go"},
+	}
+	functions := []FunctionEntity{
+		{ID: "fn:Builder.Build", Name: "Builder.Build", FilePath: "internal/store/store.go"},
+		{ID: "fn:CozoDB.Write", Name: "CozoDB.Write", FilePath: "internal/store/store.go"},
+		{ID: "fn:FileStore.Write", Name: "FileStore.Write", FilePath: "internal/store/store.go"},
+	}
+	imports := []ImportEntity{}
+	packageNames := map[string]string{
+		"internal/store/store.go": "store",
+	}
+
+	fields := []FieldEntity{
+		{StructName: "Builder", FieldName: "writer", FieldType: "Writer"},
+	}
+	implements := []ImplementsEdge{
+		{TypeName: "CozoDB", InterfaceName: "Writer"},
+		{TypeName: "FileStore", InterfaceName: "Writer"},
+	}
+
+	unresolvedCalls := []UnresolvedCall{
+		{
+			CallerID:   "fn:Builder.Build",
+			CalleeName: "writer.Write",
+			FilePath:   "internal/store/store.go",
+			Line:       10,
+		},
+	}
+
+	resolver := NewCallResolver()
+	resolver.BuildIndex(files, functions, imports, packageNames)
+	resolver.SetInterfaceIndex(fields, implements)
+
+	resolvedCalls := resolver.ResolveCalls(unresolvedCalls)
+
+	if len(resolvedCalls) != 2 {
+		t.Fatalf("expected 2 resolved calls (one per implementation), got %d", len(resolvedCalls))
+	}
+
+	calleeIDs := map[string]bool{}
+	for _, call := range resolvedCalls {
+		calleeIDs[call.CalleeID] = true
+	}
+	if !calleeIDs["fn:CozoDB.Write"] {
+		t.Error("expected callee fn:CozoDB.Write")
+	}
+	if !calleeIDs["fn:FileStore.Write"] {
+		t.Error("expected callee fn:FileStore.Write")
+	}
+}
+
+func TestCallResolver_ResolveInterfaceFieldCall_NonInterfaceIgnored(t *testing.T) {
+	// Field "name" is type "string" with no implements edges → 0 resolved calls
+
+	files := []FileEntity{
+		{ID: "file:store.go", Path: "internal/store/store.go", Language: "go"},
+	}
+	functions := []FunctionEntity{
+		{ID: "fn:Builder.Build", Name: "Builder.Build", FilePath: "internal/store/store.go"},
+	}
+	imports := []ImportEntity{}
+	packageNames := map[string]string{
+		"internal/store/store.go": "store",
+	}
+
+	// name field has type string — no implements edges for string
+	fields := []FieldEntity{
+		{StructName: "Builder", FieldName: "name", FieldType: "string"},
+	}
+	implements := []ImplementsEdge{} // no implements for string
+
+	unresolvedCalls := []UnresolvedCall{
+		{
+			CallerID:   "fn:Builder.Build",
+			CalleeName: "name.Foo",
+			FilePath:   "internal/store/store.go",
+			Line:       10,
+		},
+	}
+
+	resolver := NewCallResolver()
+	resolver.BuildIndex(files, functions, imports, packageNames)
+	resolver.SetInterfaceIndex(fields, implements)
+
+	resolvedCalls := resolver.ResolveCalls(unresolvedCalls)
+
+	if len(resolvedCalls) != 0 {
+		t.Errorf("expected 0 resolved calls for non-interface field, got %d", len(resolvedCalls))
+	}
+}
+
 func TestCallResolver_NoDuplicates(t *testing.T) {
 	// Ensure no duplicate edges are created
 

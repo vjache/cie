@@ -168,6 +168,31 @@ func TestGenerateFunctionID_DifferentColumns(t *testing.T) {
 	}
 }
 
+func TestGenerateFieldID_Deterministic(t *testing.T) {
+	id1 := GenerateFieldID("internal/store/builder.go", "Builder", "writer")
+	id2 := GenerateFieldID("internal/store/builder.go", "Builder", "writer")
+
+	if id1 != id2 {
+		t.Errorf("GenerateFieldID should be deterministic: got %q and %q", id1, id2)
+	}
+
+	if !hasPrefix(id1, "fld:") {
+		t.Errorf("GenerateFieldID should start with 'fld:': got %q", id1)
+	}
+
+	// Different fields should produce different IDs
+	id3 := GenerateFieldID("internal/store/builder.go", "Builder", "reader")
+	if id1 == id3 {
+		t.Errorf("GenerateFieldID should produce different IDs for different fields: both got %q", id1)
+	}
+
+	// Different structs should produce different IDs
+	id4 := GenerateFieldID("internal/store/builder.go", "Server", "writer")
+	if id1 == id4 {
+		t.Errorf("GenerateFieldID should produce different IDs for different structs: both got %q", id1)
+	}
+}
+
 // Helper function to check prefix (avoid importing strings package)
 func hasPrefix(s, prefix string) bool {
 	if len(prefix) > len(s) {

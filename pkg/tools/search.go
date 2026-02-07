@@ -171,6 +171,7 @@ type FindCallersArgs struct {
 }
 
 // FindCallers finds all functions that call a specific function.
+// Includes both direct callers and callers through interface dispatch.
 func FindCallers(ctx context.Context, client Querier, args FindCallersArgs) (*ToolResult, error) {
 	if args.FunctionName == "" {
 		return NewError("Error: 'function_name' is required"), nil
@@ -178,7 +179,7 @@ func FindCallers(ctx context.Context, client Querier, args FindCallersArgs) (*To
 
 	condition := fmt.Sprintf("(callee_name = %q or ends_with(callee_name, %q))", args.FunctionName, "."+args.FunctionName)
 
-	script := fmt.Sprintf(`?[caller_file, caller_name, caller_line, callee_name] := 
+	script := fmt.Sprintf(`?[caller_file, caller_name, caller_line, callee_name] :=
   *cie_calls { caller_id, callee_id },
   *cie_function { id: callee_id, name: callee_name },
   *cie_function { id: caller_id, file_path: caller_file, name: caller_name, start_line: caller_line },
@@ -187,6 +188,31 @@ func FindCallers(ctx context.Context, client Querier, args FindCallersArgs) (*To
 	result, err := client.Query(ctx, script)
 	if err != nil {
 		return NewError(fmt.Sprintf("Query error: %v\n\nGenerated query:\n%s", err, script)), nil
+	}
+
+	// Also find callers through interface dispatch:
+	// If FunctionName is "CozoDB.Write" and CozoDB implements Writer,
+	// find structs with Writer-typed fields whose methods are callers.
+	structName := extractStructName(args.FunctionName)
+	if structName != "" {
+		// Find callers through interface dispatch:
+		// Look for structs that have a field typed as an interface that structName implements,
+		// and whose methods are potential callers.
+		dispatchScript := fmt.Sprintf(
+			`?[caller_file, caller_name, caller_line, callee_name] :=
+				callee_name = %q,
+				*cie_implements { type_name: %q, interface_name },
+				*cie_field { struct_name: caller_struct, field_type: interface_name },
+				*cie_function { name: caller_name, file_path: caller_file, start_line: caller_line },
+				starts_with(caller_name, caller_struct),
+				regex_matches(caller_name, "[.]")
+			:limit 50`,
+			args.FunctionName, structName)
+
+		dispatchResult, dispatchErr := client.Query(ctx, dispatchScript)
+		if dispatchErr == nil && len(dispatchResult.Rows) > 0 {
+			result = mergeQueryResults(result, dispatchResult)
+		}
 	}
 
 	return NewResult(FormatQueryResult(result, script)), nil
@@ -198,6 +224,7 @@ type FindCalleesArgs struct {
 }
 
 // FindCallees finds all functions called by a specific function.
+// Includes both direct call edges and interface dispatch results.
 func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*ToolResult, error) {
 	if args.FunctionName == "" {
 		return NewError("Error: 'function_name' is required"), nil
@@ -205,7 +232,7 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
 
 	condition := fmt.Sprintf("(caller_name = %q or ends_with(caller_name, %q))", args.FunctionName, "."+args.FunctionName)
 
-	script := fmt.Sprintf(`?[caller_name, callee_file, callee_name, callee_line] := 
+	script := fmt.Sprintf(`?[caller_name, callee_file, callee_name, callee_line] :=
   *cie_calls { caller_id, callee_id },
   *cie_function { id: caller_id, name: caller_name },
   *cie_function { id: callee_id, file_path: callee_file, name: callee_name, start_line: callee_line },
@@ -214,6 +241,28 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
 	result, err := client.Query(ctx, script)
 	if err != nil {
 		return NewError(fmt.Sprintf("Query error: %v\n\nGenerated query:\n%s", err, script)), nil
+	}
+
+	// Also query interface dispatch callees
+	structName := extractStructName(args.FunctionName)
+	if structName != "" {
+		dispatchScript := fmt.Sprintf(
+			`?[caller_name, callee_file, callee_name, callee_line] :=
+				caller_name = %q,
+				*cie_field { struct_name: %q, field_type },
+				*cie_implements { interface_name: field_type, type_name: impl_type },
+				*cie_function { name: callee_name, file_path: callee_file, start_line: callee_line },
+				starts_with(callee_name, impl_type),
+				regex_matches(callee_name, "[.]")
+			:limit 50`,
+			args.FunctionName, structName,
+		)
+
+		dispatchResult, dispatchErr := client.Query(ctx, dispatchScript)
+		if dispatchErr == nil && len(dispatchResult.Rows) > 0 {
+			// Merge results
+			result = mergeQueryResults(result, dispatchResult)
+		}
 	}
 
 	return NewResult(FormatQueryResult(result, script)), nil
@@ -252,6 +301,26 @@ func ListFiles(ctx context.Context, client Querier, args ListFilesArgs) (*ToolRe
 	}
 
 	return NewResult(FormatQueryResult(result, script)), nil
+}
+
+// mergeQueryResults appends rows from src into dst, deduplicating by the first column value.
+func mergeQueryResults(dst, src *QueryResult) *QueryResult {
+	seen := make(map[string]bool)
+	for _, row := range dst.Rows {
+		if len(row) > 0 {
+			seen[AnyToString(row[0])] = true
+		}
+	}
+	for _, row := range src.Rows {
+		if len(row) > 0 {
+			key := AnyToString(row[0])
+			if !seen[key] {
+				seen[key] = true
+				dst.Rows = append(dst.Rows, row)
+			}
+		}
+	}
+	return dst
 }
 
 // RawQueryArgs holds arguments for raw queries.

@@ -50,6 +50,7 @@ type goFunctionWithNode struct {
 type goParseResult struct {
 	Functions       []FunctionEntity
 	Types           []TypeEntity
+	Fields          []FieldEntity
 	Calls           []CallsEdge
 	Imports         []ImportEntity
 	UnresolvedCalls []UnresolvedCall
@@ -121,12 +122,13 @@ func (p *TreeSitterParser) parseGoAST(parser *sitter.Parser, content []byte, fil
 		functions[i] = fn.entity
 	}
 
-	// Extract types (structs, interfaces, type aliases)
-	types := p.extractGoTypes(rootNode, content, filePath)
+	// Extract types (structs, interfaces, type aliases) and struct fields
+	types, fields := p.extractGoTypesAndFields(rootNode, content, filePath)
 
 	return &goParseResult{
 		Functions:       functions,
 		Types:           types,
+		Fields:          fields,
 		Calls:           calls,
 		Imports:         imports,
 		UnresolvedCalls: unresolvedCalls,
@@ -1055,20 +1057,28 @@ func (p *Parser) extractGoFunctionSignature(line string) (name, signature string
 // extractGoTypes extracts all type declarations from Go source.
 // Handles: struct types, interface types, and type aliases.
 func (p *TreeSitterParser) extractGoTypes(rootNode *sitter.Node, content []byte, filePath string) []TypeEntity {
-	var types []TypeEntity
-
-	if rootNode == nil {
-		return types
-	}
-
-	// Walk all top-level declarations looking for type declarations
-	p.walkGoTypesAST(rootNode, content, filePath, &types)
-
+	types, _ := p.extractGoTypesAndFields(rootNode, content, filePath)
 	return types
 }
 
+// extractGoTypesAndFields extracts all type declarations and struct fields from Go source.
+// Fields are extracted from struct types to support interface dispatch resolution.
+func (p *TreeSitterParser) extractGoTypesAndFields(rootNode *sitter.Node, content []byte, filePath string) ([]TypeEntity, []FieldEntity) {
+	var types []TypeEntity
+	var fields []FieldEntity
+
+	if rootNode == nil {
+		return types, fields
+	}
+
+	// Walk all top-level declarations looking for type declarations
+	p.walkGoTypesAST(rootNode, content, filePath, &types, &fields)
+
+	return types, fields
+}
+
 // walkGoTypesAST recursively walks the Go AST to find type declarations.
-func (p *TreeSitterParser) walkGoTypesAST(node *sitter.Node, content []byte, filePath string, types *[]TypeEntity) {
+func (p *TreeSitterParser) walkGoTypesAST(node *sitter.Node, content []byte, filePath string, types *[]TypeEntity, fields *[]FieldEntity) {
 	if node == nil {
 		return
 	}
@@ -1077,42 +1087,74 @@ func (p *TreeSitterParser) walkGoTypesAST(node *sitter.Node, content []byte, fil
 
 	// Only process type_declaration at top level and inside type blocks
 	if nodeType == "type_declaration" {
-		p.extractGoTypeDeclaration(node, content, filePath, types)
+		p.extractGoTypeDeclaration(node, content, filePath, types, fields)
 	}
 
 	// Recurse into children
 	for i := 0; i < int(node.ChildCount()); i++ {
 		child := node.Child(i)
-		p.walkGoTypesAST(child, content, filePath, types)
+		p.walkGoTypesAST(child, content, filePath, types, fields)
 	}
 }
 
 // extractGoTypeDeclaration extracts types from a type declaration node.
 // Handles both single type declarations and type blocks.
-func (p *TreeSitterParser) extractGoTypeDeclaration(node *sitter.Node, content []byte, filePath string, types *[]TypeEntity) {
+func (p *TreeSitterParser) extractGoTypeDeclaration(node *sitter.Node, content []byte, filePath string, types *[]TypeEntity, fields *[]FieldEntity) {
 	for i := 0; i < int(node.ChildCount()); i++ {
 		child := node.Child(i)
 
 		switch child.Type() {
 		case "type_spec":
 			// Single type: type Foo struct { ... }
-			te := p.extractGoTypeSpec(child, content, filePath)
+			te, specFields := p.extractGoTypeSpecWithFields(child, content, filePath)
 			if te != nil {
 				*types = append(*types, *te)
+			}
+			if fields != nil {
+				*fields = append(*fields, specFields...)
 			}
 		case "type_spec_list":
 			// Type block: type ( Foo struct { ... }; Bar interface { ... } )
 			for j := 0; j < int(child.ChildCount()); j++ {
 				spec := child.Child(j)
 				if spec.Type() == "type_spec" {
-					te := p.extractGoTypeSpec(spec, content, filePath)
+					te, specFields := p.extractGoTypeSpecWithFields(spec, content, filePath)
 					if te != nil {
 						*types = append(*types, *te)
+					}
+					if fields != nil {
+						*fields = append(*fields, specFields...)
 					}
 				}
 			}
 		}
 	}
+}
+
+// extractGoTypeSpecWithFields extracts a single type specification along with struct fields.
+func (p *TreeSitterParser) extractGoTypeSpecWithFields(node *sitter.Node, content []byte, filePath string) (*TypeEntity, []FieldEntity) {
+	te := p.extractGoTypeSpec(node, content, filePath)
+
+	// Extract struct fields if this is a struct type
+	var fields []FieldEntity
+	if te != nil && te.Kind == "struct" {
+		// Find the struct_type node
+		typeNode := node.ChildByFieldName("type")
+		if typeNode == nil {
+			for i := 0; i < int(node.ChildCount()); i++ {
+				child := node.Child(i)
+				if child.Type() == "struct_type" {
+					typeNode = child
+					break
+				}
+			}
+		}
+		if typeNode != nil && typeNode.Type() == "struct_type" {
+			fields = p.extractGoStructFields(typeNode, te.Name, content, filePath)
+		}
+	}
+
+	return te, fields
 }
 
 // extractGoTypeSpec extracts a single type specification.
@@ -1205,4 +1247,100 @@ func (p *TreeSitterParser) determineGoTypeKind(typeNode *sitter.Node, content []
 		// Unknown type, skip it
 		return ""
 	}
+}
+
+// extractGoStructFields extracts named fields from a struct_type node.
+// Skips embedded fields (no field name) and primitive types.
+// Returns FieldEntity for each named field whose type is a user-defined type identifier.
+func (p *TreeSitterParser) extractGoStructFields(structNode *sitter.Node, structName string, content []byte, filePath string) []FieldEntity {
+	var fields []FieldEntity
+
+	// Find the field_declaration_list inside the struct_type
+	for i := 0; i < int(structNode.ChildCount()); i++ {
+		child := structNode.Child(i)
+		if child.Type() == "field_declaration_list" {
+			for j := 0; j < int(child.ChildCount()); j++ {
+				fieldDecl := child.Child(j)
+				if fieldDecl.Type() == "field_declaration" {
+					fe := p.extractGoFieldDeclaration(fieldDecl, structName, content, filePath)
+					if fe != nil {
+						fields = append(fields, *fe)
+					}
+				}
+			}
+		}
+	}
+
+	return fields
+}
+
+// extractGoFieldDeclaration extracts a single struct field declaration.
+// Returns nil for embedded fields (no name) or fields with primitive/builtin types.
+func (p *TreeSitterParser) extractGoFieldDeclaration(fieldNode *sitter.Node, structName string, content []byte, filePath string) *FieldEntity {
+	// Get the field name (field_identifier)
+	// Embedded fields have no name child — skip them
+	var fieldName string
+	for i := 0; i < int(fieldNode.ChildCount()); i++ {
+		child := fieldNode.Child(i)
+		if child.Type() == "field_identifier" {
+			fieldName = string(content[child.StartByte():child.EndByte()])
+			break
+		}
+	}
+	if fieldName == "" {
+		return nil // Embedded field, skip
+	}
+
+	// Get the type node
+	typeNode := fieldNode.ChildByFieldName("type")
+	if typeNode == nil {
+		// Fallback: look for type-like nodes after the field identifier
+		for i := 0; i < int(fieldNode.ChildCount()); i++ {
+			child := fieldNode.Child(i)
+			ct := child.Type()
+			if ct == "type_identifier" || ct == "pointer_type" || ct == "slice_type" ||
+				ct == "array_type" || ct == "generic_type" || ct == "qualified_type" {
+				typeNode = child
+				break
+			}
+		}
+	}
+	if typeNode == nil {
+		return nil
+	}
+
+	// Extract base type name (unwrap pointer/slice/array)
+	fieldType := extractBaseTypeName(typeNode, content)
+	if fieldType == "" {
+		return nil
+	}
+
+	// Skip builtin/primitive types — we only care about user-defined types
+	// that could be interfaces
+	if isGoBuiltinType(fieldType) {
+		return nil
+	}
+
+	line := int(fieldNode.StartPoint().Row) + 1
+
+	return &FieldEntity{
+		StructName: structName,
+		FieldName:  fieldName,
+		FieldType:  fieldType,
+		FilePath:   filePath,
+		Line:       line,
+	}
+}
+
+// isGoBuiltinType checks if a type name is a Go builtin type.
+func isGoBuiltinType(name string) bool {
+	builtins := map[string]bool{
+		"bool": true, "byte": true, "complex64": true, "complex128": true,
+		"error": true, "float32": true, "float64": true,
+		"int": true, "int8": true, "int16": true, "int32": true, "int64": true,
+		"rune": true, "string": true,
+		"uint": true, "uint8": true, "uint16": true, "uint32": true, "uint64": true,
+		"uintptr": true, "any": true,
+	}
+	return builtins[name]
 }

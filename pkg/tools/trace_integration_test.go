@@ -144,6 +144,57 @@ func TestDetectEntryPoints_Integration(t *testing.T) {
 	}
 }
 
+func TestTracePath_InterfaceDispatch_Integration(t *testing.T) {
+	db := openTestDB(t)
+
+	// Setup: main -> Builder.Build (direct call)
+	//        Builder has field "writer" of type Writer
+	//        CozoDB implements Writer
+	//        CozoDB.Write is a function
+	// Expected: TracePath(target="CozoDB.Write", source="main") finds:
+	//           main -> Builder.Build -> CozoDB.Write (via interface dispatch)
+
+	insertTestFunction(t, db, "func_main", "main", "cmd/main.go",
+		"func main()", "func main() { b := Builder{}; b.Build() }", 1)
+	insertTestFunction(t, db, "func_build", "Builder.Build", "internal/builder.go",
+		"func (b *Builder) Build() error", "func (b *Builder) Build() error { b.writer.Write([]byte(\"x\")); return nil }", 10)
+	insertTestFunction(t, db, "func_cozo_write", "CozoDB.Write", "internal/cozo.go",
+		"func (c *CozoDB) Write(data []byte) error", "func (c *CozoDB) Write(data []byte) error { return nil }", 20)
+
+	// Direct call edge: main -> Builder.Build
+	insertTestCall(t, db, "call1", "func_main", "func_build")
+	// No direct call edge from Builder.Build to CozoDB.Write — that's the gap interface dispatch fills
+
+	// Field: Builder has a "writer" field of type "Writer"
+	insertTestField(t, db, "fld1", "Builder", "writer", "Writer", "internal/builder.go", 5)
+
+	// Implements: CozoDB implements Writer
+	insertTestImplements(t, db, "impl1", "CozoDB", "Writer", "internal/cozo.go")
+
+	client := NewTestCIEClient(db)
+	ctx := context.Background()
+
+	result, err := TracePath(ctx, client, TracePathArgs{
+		Target:   "CozoDB.Write",
+		Source:   "main",
+		MaxPaths: 3,
+		MaxDepth: 10,
+	})
+	if err != nil {
+		t.Fatalf("TracePath() error = %v", err)
+	}
+
+	// Should find a path: main -> Builder.Build -> CozoDB.Write
+	if strings.Contains(result.Text, "No path found") {
+		t.Errorf("TracePath() should find path through interface dispatch, got:\n%s", result.Text)
+	}
+	for _, want := range []string{"main", "Builder.Build", "CozoDB.Write"} {
+		if !strings.Contains(result.Text, want) {
+			t.Errorf("TracePath() should contain %q, got:\n%s", want, result.Text)
+		}
+	}
+}
+
 func TestFindFunctionsByName_Integration(t *testing.T) {
 	db := openTestDB(t)
 

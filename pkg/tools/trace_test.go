@@ -862,6 +862,125 @@ func TestTracePath_Unit_ContextCancellation(t *testing.T) {
 	_ = result
 }
 
+// Test getCallees with interface dispatch
+func TestGetCallees_InterfaceDispatch(t *testing.T) {
+	client := NewMockClientCustom(
+		func(ctx context.Context, script string) (*QueryResult, error) {
+			// Direct callees query (cie_calls)
+			if strings.Contains(script, "cie_calls") {
+				return &QueryResult{
+					Headers: []string{"callee_name", "callee_file", "callee_line"},
+					Rows:    [][]any{}, // No direct callees
+				}, nil
+			}
+			// Interface dispatch query (cie_field + cie_implements)
+			if strings.Contains(script, "cie_field") && strings.Contains(script, "cie_implements") {
+				return &QueryResult{
+					Headers: []string{"callee_name", "callee_file", "callee_line"},
+					Rows: [][]any{
+						{"CozoDB.Write", "internal/cozo.go", 42},
+						{"FileStore.Write", "internal/filestore.go", 10},
+					},
+				}, nil
+			}
+			return &QueryResult{Headers: []string{}, Rows: [][]any{}}, nil
+		},
+		nil,
+	)
+	ctx := context.Background()
+
+	callees := getCallees(ctx, client, "Builder.Build")
+
+	if len(callees) != 2 {
+		t.Fatalf("getCallees() returned %d callees, want 2", len(callees))
+	}
+
+	names := map[string]bool{}
+	for _, c := range callees {
+		names[c.Name] = true
+	}
+	if !names["CozoDB.Write"] {
+		t.Error("getCallees() should include CozoDB.Write from interface dispatch")
+	}
+	if !names["FileStore.Write"] {
+		t.Error("getCallees() should include FileStore.Write from interface dispatch")
+	}
+}
+
+// Test getCallees deduplication: interface dispatch should not duplicate direct callees
+func TestGetCallees_InterfaceDispatch_Dedup(t *testing.T) {
+	client := NewMockClientCustom(
+		func(ctx context.Context, script string) (*QueryResult, error) {
+			if strings.Contains(script, "cie_calls") {
+				return &QueryResult{
+					Headers: []string{"callee_name", "callee_file", "callee_line"},
+					Rows: [][]any{
+						{"CozoDB.Write", "internal/cozo.go", 42},
+					},
+				}, nil
+			}
+			if strings.Contains(script, "cie_field") {
+				return &QueryResult{
+					Headers: []string{"callee_name", "callee_file", "callee_line"},
+					Rows: [][]any{
+						{"CozoDB.Write", "internal/cozo.go", 42}, // duplicate
+						{"FileStore.Write", "internal/filestore.go", 10},
+					},
+				}, nil
+			}
+			return &QueryResult{Headers: []string{}, Rows: [][]any{}}, nil
+		},
+		nil,
+	)
+	ctx := context.Background()
+
+	callees := getCallees(ctx, client, "Builder.Build")
+
+	if len(callees) != 2 {
+		t.Fatalf("getCallees() returned %d callees, want 2 (deduped)", len(callees))
+	}
+}
+
+// Test that getCallees skips interface dispatch for non-method functions
+func TestGetCallees_InterfaceDispatch_NonMethod(t *testing.T) {
+	queryCalls := 0
+	client := NewMockClientCustom(
+		func(ctx context.Context, script string) (*QueryResult, error) {
+			queryCalls++
+			return &QueryResult{Headers: []string{}, Rows: [][]any{}}, nil
+		},
+		nil,
+	)
+	ctx := context.Background()
+
+	_ = getCallees(ctx, client, "main") // plain function, not a method
+
+	// Should only issue the cie_calls query, not the dispatch query
+	if queryCalls != 1 {
+		t.Errorf("getCallees(\"main\") issued %d queries, want 1 (no dispatch for non-method)", queryCalls)
+	}
+}
+
+// Test extractStructName helper
+func TestExtractStructName(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"Builder.Build", "Builder"},
+		{"Service.HandleRequest", "Service"},
+		{"main", ""},
+		{"standalone", ""},
+		{".Leading", ""},
+	}
+	for _, tt := range tests {
+		got := extractStructName(tt.input)
+		if got != tt.want {
+			t.Errorf("extractStructName(%q) = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 // ============================================================================
 // INTEGRATION TESTS (require CozoDB - see trace_integration_test.go)
 // ============================================================================

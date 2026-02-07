@@ -185,6 +185,30 @@ func createCIESchema(db *cozo.CozoDB) error {
 		return fmt.Errorf("create cie_calls: %w", err)
 	}
 
+	// Create cie_field table (struct field → type mapping)
+	_, err = db.Run(`:create cie_field {
+		id: String =>
+		struct_name: String,
+		field_name: String,
+		field_type: String,
+		file_path: String,
+		line: Int,
+	}`, nil)
+	if err != nil {
+		return fmt.Errorf("create cie_field: %w", err)
+	}
+
+	// Create cie_implements table (concrete type → interface)
+	_, err = db.Run(`:create cie_implements {
+		id: String =>
+		type_name: String,
+		interface_name: String,
+		file_path: String,
+	}`, nil)
+	if err != nil {
+		return fmt.Errorf("create cie_implements: %w", err)
+	}
+
 	return nil
 }
 
@@ -286,6 +310,50 @@ func insertTestType(t testing.TB, db *cozo.CozoDB, id, name, kind, filePath, cod
 	_, err = db.Run(codeScript, codeParams)
 	if err != nil {
 		t.Fatalf("Failed to insert test type code: %v", err)
+	}
+}
+
+// insertTestField inserts a struct field entity.
+func insertTestField(t testing.TB, db *cozo.CozoDB, id, structName, fieldName, fieldType, filePath string, line int) {
+	t.Helper()
+
+	script := `?[id, struct_name, field_name, field_type, file_path, line] <-
+		[[$id, $struct_name, $field_name, $field_type, $file_path, $line]]
+		:put cie_field { id => struct_name, field_name, field_type, file_path, line }`
+
+	params := map[string]any{
+		"id":          id,
+		"struct_name": structName,
+		"field_name":  fieldName,
+		"field_type":  fieldType,
+		"file_path":   filePath,
+		"line":        line,
+	}
+
+	_, err := db.Run(script, params)
+	if err != nil {
+		t.Fatalf("Failed to insert test field: %v", err)
+	}
+}
+
+// insertTestImplements inserts an implements relationship.
+func insertTestImplements(t testing.TB, db *cozo.CozoDB, id, typeName, interfaceName, filePath string) {
+	t.Helper()
+
+	script := `?[id, type_name, interface_name, file_path] <-
+		[[$id, $type_name, $interface_name, $file_path]]
+		:put cie_implements { id => type_name, interface_name, file_path }`
+
+	params := map[string]any{
+		"id":             id,
+		"type_name":      typeName,
+		"interface_name": interfaceName,
+		"file_path":      filePath,
+	}
+
+	_, err := db.Run(script, params)
+	if err != nil {
+		t.Fatalf("Failed to insert test implements: %v", err)
 	}
 }
 

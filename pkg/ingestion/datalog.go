@@ -399,6 +399,39 @@ func formatFloat(f float32) string {
 	return strconv.FormatFloat(f64, 'f', -1, 32)
 }
 
+// BuildFieldAndImplementsMutations generates Datalog :put statements for field and implements entities.
+func (db *DatalogBuilder) BuildFieldAndImplementsMutations(fields []FieldEntity, implements []ImplementsEdge) string {
+	var buf strings.Builder
+
+	for _, f := range fields {
+		id := GenerateFieldID(f.FilePath, f.StructName, f.FieldName)
+		buf.WriteString("{ ?[id, struct_name, field_name, field_type, file_path, line] <- [[")
+		buf.WriteString(strings.Join([]string{
+			quoteString(id),
+			quoteString(f.StructName),
+			quoteString(f.FieldName),
+			quoteString(f.FieldType),
+			quoteString(f.FilePath),
+			fmt.Sprintf("%d", f.Line),
+		}, ", "))
+		buf.WriteString("]] :put cie_field { id, struct_name, field_name, field_type, file_path, line } }\n")
+	}
+
+	for _, e := range implements {
+		id := GenerateImplementsID(e.TypeName, e.InterfaceName)
+		buf.WriteString("{ ?[id, type_name, interface_name, file_path] <- [[")
+		buf.WriteString(strings.Join([]string{
+			quoteString(id),
+			quoteString(e.TypeName),
+			quoteString(e.InterfaceName),
+			quoteString(e.FilePath),
+		}, ", "))
+		buf.WriteString("]] :put cie_implements { id, type_name, interface_name, file_path } }\n")
+	}
+
+	return buf.String()
+}
+
 // CountMutations estimates the number of mutations in a Datalog script.
 // This is approximate but useful for batching decisions.
 func CountMutations(script string) int {

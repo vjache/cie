@@ -151,6 +151,7 @@ func (p *TreeSitterParser) ParseFile(fileInfo FileInfo) (*ParseResult, error) {
 	// Parse with appropriate language parser
 	var functions []FunctionEntity
 	var types []TypeEntity
+	var fields []FieldEntity
 	var calls []CallsEdge
 	var imports []ImportEntity
 	var unresolvedCalls []UnresolvedCall
@@ -170,6 +171,7 @@ func (p *TreeSitterParser) ParseFile(fileInfo FileInfo) (*ParseResult, error) {
 		}
 		functions = goResult.Functions
 		types = goResult.Types
+		fields = goResult.Fields
 		calls = goResult.Calls
 		imports = goResult.Imports
 		unresolvedCalls = goResult.UnresolvedCalls
@@ -241,6 +243,7 @@ func (p *TreeSitterParser) ParseFile(fileInfo FileInfo) (*ParseResult, error) {
 		File:            fileEntity,
 		Functions:       functions,
 		Types:           types,
+		Fields:          fields,
 		Defines:         defines,
 		DefinesTypes:    definesTypes,
 		Calls:           calls,
