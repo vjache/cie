@@ -5,6 +5,17 @@ All notable changes to CIE (Code Intelligence Engine) will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.8] - 2026-02-07
+
+### Fixed
+- **Parser self-name-match bug** — When a method calls another method with the same simple name through a field (e.g., `EmbeddedQuerier.Query` calling `q.backend.Query()`), the call was silently dropped because the parser detected it as a self-call. The `else if` structure in the parser meant the unresolved call path was unreachable when the simple name matched. This was the **root cause** of `cie_trace_path` failing to cross interface chains — functions like `EmbeddedQuerier.Query` had zero call edges in the index.
+- **BFS visited map blocking alternate paths** — `cie_trace_path` could only find one path to each target. When a test implementation reached the target at depth 2, the `visited` map blocked the real production path at depth 3. Target nodes are now checked before being marked as visited, allowing `max_paths` to return genuinely different paths.
+- **Field dispatch fan-out** — Interface and concrete field dispatch (Phases 2/2b) returned ALL methods of field types instead of just the called method. Now reads the function's source code from the index and filters to only methods that appear in `.MethodName(` patterns. For `EmbeddedQuerier.Query`, this reduces results from 17 to 1.
+
+### Changed
+- MCP server version bumped to 1.12.0.
+- Extracted `getCalleesViaFields`, `appendFilteredCallees`, `processGoCallExpression`, and `addUnresolvedCall` helpers to reduce cognitive complexity.
+
 ## [0.7.7] - 2026-02-07
 
 ### Fixed

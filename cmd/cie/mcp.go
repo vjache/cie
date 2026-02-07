@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	mcpVersion    = "1.11.0" // Fix interface chain tracing, exclude test mocks from dispatch
+	mcpVersion    = "1.12.0" // Fix parser self-name-match, BFS multi-path, field dispatch fan-out reduction
 	mcpServerName = "cie"
 )
 
