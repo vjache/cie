@@ -8,11 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.7.6] - 2026-02-07
 
 ### Fixed
+- **`cie_trace_path` now crosses multiple interface boundaries** — The core tracing bug: parameter-based dispatch (Phase 3) was skipped when a method already had callees from direct calls or field dispatch. This prevented tracing chains like `Store → storeNode → storeFact → Client.StoreFact → Writer.StoreFact → Execute` where the path crosses two interface boundaries. Phase 3 now always runs.
+- **Test mocks excluded from interface dispatch** — All interface dispatch queries in `cie_find_callees` and `cie_trace_path` now filter out implementations defined in `_test.go` files. Previously, `MockQuerier.StoreFact` appeared alongside `Client.StoreFact`, adding ~50% noise to results.
 - **External stub validation failure** — Synthetic stub functions for external types (e.g., `sql.DB.Query`) had `StartLine=0, EndLine=0`, which failed the entity validator during indexing. Now set to valid placeholder values.
-- **Incorrect `cie reset --force` in error messages** — Error messages and documentation recommended the non-existent `--force` flag. Corrected to `cie reset --yes` across CLI error output, doc comments, and exit-codes documentation.
+- **Incorrect `cie reset --force` in error messages** — Error messages and documentation recommended the non-existent `--force` flag. Corrected to `cie reset --yes`.
 
 ### Changed
-- MCP server version bumped to 1.10.1.
+- MCP server version bumped to 1.11.0.
 
 ## [0.7.5] - 2026-02-07
 
@@ -277,6 +279,7 @@ Initial open source release of CIE (Code Intelligence Engine).
 
 [unreleased]: https://github.com/kraklabs/cie/compare/v0.7.6...HEAD
 [0.7.6]: https://github.com/kraklabs/cie/compare/v0.7.5...v0.7.6
+
 [0.7.5]: https://github.com/kraklabs/cie/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/kraklabs/cie/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/kraklabs/cie/compare/v0.7.2...v0.7.3

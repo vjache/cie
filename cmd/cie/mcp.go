@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	mcpVersion    = "1.10.1" // Fix external stub validation, correct reset --force to --yes
+	mcpVersion    = "1.11.0" // Fix interface chain tracing, exclude test mocks from dispatch
 	mcpServerName = "cie"
 )
 
