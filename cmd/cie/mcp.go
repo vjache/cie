@@ -69,6 +69,7 @@ All CIE tool queries MUST be in English. The keyword boost algorithm matches que
 | Function git commit history | cie_function_history | function_name="HandleAuth" |
 | Find when code was introduced | cie_find_introduction | code_snippet="jwt.Generate()" |
 | Function code ownership/blame | cie_blame_function | function_name="Parse" |
+| Find functions by param/return type | cie_find_by_signature | param_type="Querier" |
 | Verify patterns do NOT exist | cie_verify_absence | patterns=["api_key","secret"] |
 | List gRPC services & RPCs | cie_list_services | path_pattern="api/proto" |
 | Raw CozoScript query | cie_raw_query | (call cie_schema first) |
@@ -136,6 +137,8 @@ Follow this progression for most code exploration tasks:
 **cie_find_type** — Find types, structs, interfaces, classes by name. Filter by kind: "struct", "interface", "class", "type_alias".
 
 **cie_find_implementations** — Find concrete types that implement an interface. Works for Go (struct method matching) and TypeScript (implements keyword).
+
+**cie_find_by_signature** — Find functions by parameter type or return type. Searches function signatures for a given base type name, matching regardless of pointer/slice/package prefix. Useful for discovering which functions accept a specific interface or struct.
 
 ### Architecture Discovery Tools
 
@@ -1001,6 +1004,37 @@ func (s *mcpServer) getTools() []mcpTool {
 			},
 		},
 		{
+			Name:        "cie_find_by_signature",
+			Description: "Find functions by parameter type or return type. Useful for discovering which functions accept a specific interface or struct as input (e.g., all functions taking a 'Backend' or 'Querier' parameter). Matches base type names regardless of pointer/slice/package prefix.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"param_type": map[string]any{
+						"type":        "string",
+						"description": "Base type name to search in parameters (e.g., 'Backend', 'Querier'). Matches regardless of pointer/slice/package prefix.",
+					},
+					"return_type": map[string]any{
+						"type":        "string",
+						"description": "Type name to search in return values (e.g., 'error', 'Client')",
+					},
+					"path_pattern": map[string]any{
+						"type":        "string",
+						"description": "Optional regex to filter by file path",
+					},
+					"exclude_pattern": map[string]any{
+						"type":        "string",
+						"description": "Optional regex to exclude files",
+					},
+					"limit": map[string]any{
+						"type":        "integer",
+						"description": "Maximum results (default: 20)",
+						"default":     20,
+					},
+				},
+				"required": []string{},
+			},
+		},
+		{
 			Name:        "cie_trace_path",
 			Description: "Trace call paths from source function(s) to a target function. Uses the call graph to find how execution reaches a specific function. Returns the shortest paths with full call chain and file locations. If no source is specified, auto-detects entry points based on language conventions (main for Go/Rust, index/app exports for JS/TS, __main__ for Python). Useful for understanding initialization flows, debugging, security audits, and refactoring impact analysis.",
 			InputSchema: map[string]any{
@@ -1139,6 +1173,7 @@ var toolHandlers = map[string]toolHandler{
 	"cie_directory_summary":      handleDirectorySummary,
 	"cie_list_endpoints":         handleListEndpoints,
 	"cie_find_implementations":   handleFindImplementations,
+	"cie_find_by_signature":      handleFindBySignature,
 	"cie_trace_path":             handleTracePath,
 	"cie_function_history":       handleFunctionHistory,
 	"cie_find_introduction":      handleFindIntroduction,
@@ -1397,6 +1432,21 @@ func handleFindImplementations(ctx context.Context, s *mcpServer, args map[strin
 		InterfaceName: interfaceName,
 		PathPattern:   pathPattern,
 		Limit:         limit,
+	})
+}
+
+func handleFindBySignature(ctx context.Context, s *mcpServer, args map[string]any) (*tools.ToolResult, error) {
+	paramType, _ := args["param_type"].(string)
+	returnType, _ := args["return_type"].(string)
+	pathPattern, _ := args["path_pattern"].(string)
+	excludePattern, _ := args["exclude_pattern"].(string)
+	limit, _ := getIntArg(args, "limit", 20)
+	return tools.FindBySignature(ctx, s.client, tools.FindBySignatureArgs{
+		ParamType:      paramType,
+		ReturnType:     returnType,
+		PathPattern:    pathPattern,
+		ExcludePattern: excludePattern,
+		Limit:          limit,
 	})
 }
 
