@@ -5,7 +5,7 @@ All notable changes to CIE (Code Intelligence Engine) will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.7.6] - 2026-02-07
+## [0.7.7] - 2026-02-07
 
 ### Fixed
 - **`cie_trace_path` now crosses multiple interface boundaries** — The core tracing bug: parameter-based dispatch (Phase 3) was skipped when a method already had callees from direct calls or field dispatch. This prevented tracing chains like `Store → storeNode → storeFact → Client.StoreFact → Writer.StoreFact → Execute` where the path crosses two interface boundaries. Phase 3 now always runs.
@@ -277,8 +277,8 @@ Initial open source release of CIE (Code Intelligence Engine).
 - No hardcoded credentials in codebase
 - All API keys via environment variables only
 
-[unreleased]: https://github.com/kraklabs/cie/compare/v0.7.6...HEAD
-[0.7.6]: https://github.com/kraklabs/cie/compare/v0.7.5...v0.7.6
+[unreleased]: https://github.com/kraklabs/cie/compare/v0.7.7...HEAD
+[0.7.7]: https://github.com/kraklabs/cie/compare/v0.7.5...v0.7.7
 
 [0.7.5]: https://github.com/kraklabs/cie/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/kraklabs/cie/compare/v0.7.3...v0.7.4
