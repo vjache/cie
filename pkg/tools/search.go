@@ -266,9 +266,12 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
 		return NewError(fmt.Sprintf("Query error: %v\n\nGenerated query:\n%s", err, script)), nil
 	}
 
-	// Also query interface dispatch callees
+	// Also query interface dispatch callees.
+	// Extract called method names from source code to filter and reduce fan-out.
 	structName := extractStructName(args.FunctionName)
 	if structName != "" {
+		calledMethods := extractCalledMethodsFromCode(ctx, client, args.FunctionName)
+
 		dispatchScript := fmt.Sprintf(
 			`?[caller_name, callee_file, callee_name, callee_line] :=
 				caller_name = %q,
@@ -286,7 +289,12 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
 
 		dispatchResult, dispatchErr := client.Query(ctx, dispatchScript)
 		if dispatchErr == nil && len(dispatchResult.Rows) > 0 {
-			result = mergeQueryResults(result, dispatchResult)
+			if calledMethods != nil {
+				dispatchResult = filterResultsByCalledMethods(dispatchResult, calledMethods)
+			}
+			if len(dispatchResult.Rows) > 0 {
+				result = mergeQueryResults(result, dispatchResult)
+			}
 		}
 
 		// Concrete field dispatch (non-interface fields like *CozoDB)
@@ -302,7 +310,12 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
 		)
 		concreteResult, concreteErr := client.Query(ctx, concreteScript)
 		if concreteErr == nil && len(concreteResult.Rows) > 0 {
-			result = mergeQueryResults(result, concreteResult)
+			if calledMethods != nil {
+				concreteResult = filterResultsByCalledMethods(concreteResult, calledMethods)
+			}
+			if len(concreteResult.Rows) > 0 {
+				result = mergeQueryResults(result, concreteResult)
+			}
 		}
 	}
 
@@ -408,6 +421,23 @@ func ListFiles(ctx context.Context, client Querier, args ListFilesArgs) (*ToolRe
 }
 
 // mergeQueryResults appends rows from src into dst, deduplicating by composite key of all columns.
+// filterResultsByCalledMethods filters a QueryResult to only include rows where
+// the callee_name column (index 2) has a method name matching the calledMethods set.
+// Used to reduce Phase 2b fan-out from returning ALL methods of field types.
+func filterResultsByCalledMethods(result *QueryResult, calledMethods map[string]bool) *QueryResult {
+	var filtered [][]any
+	for _, row := range result.Rows {
+		if len(row) > 2 {
+			calleeName := AnyToString(row[2])
+			methodName := extractMethodName(calleeName)
+			if calledMethods[methodName] {
+				filtered = append(filtered, row)
+			}
+		}
+	}
+	return &QueryResult{Headers: result.Headers, Rows: filtered}
+}
+
 func mergeQueryResults(dst, src *QueryResult) *QueryResult {
 	seen := make(map[string]bool)
 	for _, row := range dst.Rows {

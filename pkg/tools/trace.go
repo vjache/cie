@@ -22,6 +22,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/kraklabs/cie/pkg/sigparse"
@@ -290,7 +291,20 @@ func searchFromSource(ctx context.Context, client Querier, src TraceFuncInfo, ta
 		current := queue[0]
 		queue = queue[1:]
 
-		if len(current.path) > args.MaxDepth || visited[current.funcName] {
+		if len(current.path) > args.MaxDepth {
+			continue
+		}
+
+		// Check target BEFORE marking visited — allows multiple paths to reach
+		// the same target through different routes (e.g., via test impl at depth 2
+		// AND via real impl at depth 3). Without this, the first path to reach
+		// the target marks it visited, blocking all alternate paths.
+		if targetSet[current.funcName] && len(current.path) > 1 {
+			result.paths = append(result.paths, current.path)
+			continue // Don't expand target's callees or mark it visited
+		}
+
+		if visited[current.funcName] {
 			continue
 		}
 		visited[current.funcName] = true
@@ -299,11 +313,6 @@ func searchFromSource(ctx context.Context, client Querier, src TraceFuncInfo, ta
 		// Track deepest partial path for diagnostic output
 		if len(current.path) > len(result.deepestPath) {
 			result.deepestPath = current.path
-		}
-
-		if targetSet[current.funcName] && len(current.path) > 1 {
-			result.paths = append(result.paths, current.path)
-			continue
 		}
 
 		callees, cached := calleesCache[current.funcName]
@@ -520,87 +529,95 @@ func getCallees(ctx context.Context, client Querier, funcName string) []TraceFun
 		})
 	}
 
-	// 2. Interface dispatch callees
-	// If the caller is a method (e.g., "Builder.Build"), find its struct's
-	// interface-typed fields and resolve to concrete implementations
+	// 2 & 2b. Field-based dispatch (interface + concrete)
 	structName := extractStructName(funcName)
 	if structName != "" {
-		dispatchScript := fmt.Sprintf(
-			`?[callee_name, callee_file, callee_line] :=
-				*cie_field { struct_name: %q, field_type },
-				*cie_implements { interface_name },
-				(field_type = interface_name or ends_with(field_type, concat(".", interface_name))),
-				*cie_implements { interface_name, type_name: impl_type },
-				impl_prefix = concat(impl_type, "."),
-				*cie_function { name: callee_name, file_path: callee_file, start_line: callee_line },
-				starts_with(callee_name, impl_prefix),
-				not regex_matches(callee_file, "_test[.]go$")
-			:limit 50`,
-			structName,
-		)
-
-		dispatchResult, err := client.Query(ctx, dispatchScript)
-		if err == nil {
-			for _, row := range dispatchResult.Rows {
-				name := AnyToString(row[0])
-				if !seen[name] {
-					seen[name] = true
-					ret = append(ret, TraceFuncInfo{
-						Name:     name,
-						FilePath: AnyToString(row[1]),
-						Line:     AnyToString(row[2]),
-					})
-				}
-			}
-		}
-	}
-
-	// 2b. Concrete field method dispatch (non-interface field types)
-	// For struct fields whose type is concrete (not found via cie_implements above),
-	// look up methods directly in cie_function.
-	if structName != "" {
-		concreteFieldScript := fmt.Sprintf(
-			`?[callee_name, callee_file, callee_line] :=
-				*cie_field { struct_name: %q, field_type },
-				field_prefix = concat(field_type, "."),
-				*cie_function { name: callee_name, file_path: callee_file, start_line: callee_line },
-				starts_with(callee_name, field_prefix)
-			:limit 50`,
-			structName,
-		)
-		concreteResult, err := client.Query(ctx, concreteFieldScript)
-		if err == nil {
-			for _, row := range concreteResult.Rows {
-				name := AnyToString(row[0])
-				if !seen[name] {
-					seen[name] = true
-					ret = append(ret, TraceFuncInfo{
-						Name:     name,
-						FilePath: AnyToString(row[1]),
-						Line:     AnyToString(row[2]),
-					})
-				}
-			}
-		}
+		fieldCallees := getCalleesViaFields(ctx, client, funcName, structName, seen)
+		ret = append(ret, fieldCallees...)
 	}
 
 	// 3. Parameter-based interface dispatch
 	// Always run: a method can have BOTH field-based callees (Phase 2) AND
-	// parameter-based interface calls. Skipping this when Phase 1/2 found results
-	// breaks trace chains like Client.StoreFact(writer Writer) → writer.Execute().
-	// Collect direct callee names from Phase 1 for fan-out filtering.
+	// parameter-based interface calls.
 	directCalleeNames := make(map[string]bool)
 	for _, c := range ret {
 		if methodName := extractMethodName(c.Name); methodName != "" {
 			directCalleeNames[methodName] = true
 		} else if c.Name != "" {
-			// Unqualified callee name (e.g., "StoreFact") — use it directly
 			directCalleeNames[c.Name] = true
 		}
 	}
 	paramCallees := getCalleesViaParams(ctx, client, funcName, seen, directCalleeNames)
 	ret = append(ret, paramCallees...)
 
+	return ret
+}
+
+// getCalleesViaFields resolves callees through struct field types.
+// Phase 2: interface-typed fields → concrete implementations.
+// Phase 2b: concrete-typed fields → direct method lookup.
+// Uses source code analysis to filter results to only actually called methods.
+func getCalleesViaFields(ctx context.Context, client Querier, funcName, structName string, seen map[string]bool) []TraceFuncInfo {
+	calledMethods := extractCalledMethodsFromCode(ctx, client, funcName)
+	var ret []TraceFuncInfo
+
+	// Phase 2: Interface field dispatch
+	dispatchScript := fmt.Sprintf(
+		`?[callee_name, callee_file, callee_line] :=
+			*cie_field { struct_name: %q, field_type },
+			*cie_implements { interface_name },
+			(field_type = interface_name or ends_with(field_type, concat(".", interface_name))),
+			*cie_implements { interface_name, type_name: impl_type },
+			impl_prefix = concat(impl_type, "."),
+			*cie_function { name: callee_name, file_path: callee_file, start_line: callee_line },
+			starts_with(callee_name, impl_prefix),
+			not regex_matches(callee_file, "_test[.]go$")
+		:limit 50`,
+		structName,
+	)
+	dispatchResult, err := client.Query(ctx, dispatchScript)
+	if err == nil {
+		ret = appendFilteredCallees(ret, dispatchResult, seen, calledMethods)
+	}
+
+	// Phase 2b: Concrete field dispatch
+	concreteScript := fmt.Sprintf(
+		`?[callee_name, callee_file, callee_line] :=
+			*cie_field { struct_name: %q, field_type },
+			field_prefix = concat(field_type, "."),
+			*cie_function { name: callee_name, file_path: callee_file, start_line: callee_line },
+			starts_with(callee_name, field_prefix)
+		:limit 50`,
+		structName,
+	)
+	concreteResult, err := client.Query(ctx, concreteScript)
+	if err == nil {
+		ret = appendFilteredCallees(ret, concreteResult, seen, calledMethods)
+	}
+
+	return ret
+}
+
+// appendFilteredCallees adds query results to ret, filtering by seen map and
+// optionally by calledMethods (method names extracted from source code).
+func appendFilteredCallees(ret []TraceFuncInfo, result *QueryResult, seen map[string]bool, calledMethods map[string]bool) []TraceFuncInfo {
+	for _, row := range result.Rows {
+		name := AnyToString(row[0])
+		if seen[name] {
+			continue
+		}
+		if calledMethods != nil {
+			if !calledMethods[extractMethodName(name)] {
+				continue
+			}
+		}
+		seen[name] = true
+		ret = append(ret, TraceFuncInfo{
+			Name:     name,
+			FilePath: AnyToString(row[1]),
+			Line:     AnyToString(row[2]),
+		})
+	}
 	return ret
 }
 
@@ -676,6 +693,37 @@ func getCalleesViaParams(ctx context.Context, client Querier, funcName string, s
 	}
 
 	return ret
+}
+
+// selectorCallPattern matches method calls through selectors like `.Query(` or `.Execute(`
+var selectorCallPattern = regexp.MustCompile(`\.([A-Z]\w*)\s*\(`)
+
+// extractCalledMethodsFromCode parses function source code to find method names
+// called through selectors (e.g., `.Query(`, `.Execute(`). Returns a set of
+// method names. Used to filter Phase 2b results and reduce fan-out.
+func extractCalledMethodsFromCode(ctx context.Context, client Querier, funcName string) map[string]bool {
+	script := fmt.Sprintf(
+		`?[code_text] := *cie_function_code { function_id, code_text }, *cie_function { id: function_id, name: %q } :limit 1`,
+		funcName,
+	)
+	result, err := client.Query(ctx, script)
+	if err != nil || len(result.Rows) == 0 {
+		return nil
+	}
+	code := AnyToString(result.Rows[0][0])
+	if code == "" {
+		return nil
+	}
+
+	matches := selectorCallPattern.FindAllStringSubmatch(code, -1)
+	if len(matches) == 0 {
+		return nil
+	}
+	methods := make(map[string]bool, len(matches))
+	for _, m := range matches {
+		methods[m[1]] = true
+	}
+	return methods
 }
 
 // extractMethodName extracts the method name from a qualified function name.
