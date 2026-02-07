@@ -475,6 +475,38 @@ func TestGoParser_StructFields_SkipsEmbedded(t *testing.T) {
 }
 
 // TestGoParser_DefinesTypeEdges tests that file->type relationships are created.
+// TestGoParser_SelfNameCallNotDropped tests that when a method calls another method
+// with the same simple name through a field (e.g., Backend.Query calling b.db.Query()),
+// the call is correctly stored as an unresolved call instead of being silently dropped.
+func TestGoParser_SelfNameCallNotDropped(t *testing.T) {
+	result := parseTestFile(t, "testdata/go/self_name_call.go")
+
+	// Should extract Backend.Query and DB.Query methods plus DB and Backend types
+	assert.GreaterOrEqual(t, len(result.Functions), 2, "Should have at least Backend.Query and DB.Query")
+
+	// Find the Backend.Query function
+	var backendQueryID string
+	for _, fn := range result.Functions {
+		if fn.Name == "Backend.Query" {
+			backendQueryID = fn.ID
+			break
+		}
+	}
+	assert.NotEmpty(t, backendQueryID, "Should find Backend.Query function")
+
+	// The call b.db.Query() should produce an unresolved call (fullName "b.db.Query")
+	// because simple name "Query" matches self (Backend.Query) but the full call
+	// is actually to a different function through a field.
+	var foundUnresolved bool
+	for _, call := range result.UnresolvedCalls {
+		if call.CallerID == backendQueryID && call.CalleeName == "b.db.Query" {
+			foundUnresolved = true
+			break
+		}
+	}
+	assert.True(t, foundUnresolved, "Backend.Query calling b.db.Query() should produce unresolved call 'b.db.Query', not be silently dropped as self-call")
+}
+
 func TestGoParser_DefinesTypeEdges(t *testing.T) {
 	result := parseTestFile(t, "testdata/go/interface_impl.go")
 

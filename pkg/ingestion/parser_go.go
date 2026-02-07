@@ -693,43 +693,8 @@ func (p *TreeSitterParser) walkGoCallExpressionsV2(
 	}
 
 	if node.Type() == "call_expression" {
-		funcNode := node.ChildByFieldName("function")
-		if funcNode != nil {
-			// Get simple name for local resolution
-			simpleName := p.extractGoCalleeName(funcNode, content)
-			// Get full name for cross-package calls (e.g., "pkg.Foo")
-			fullName := p.extractGoCalleeNameFull(funcNode, content)
-
-			if simpleName != "" {
-				// Try local resolution first
-				if calleeID, exists := funcNameToID[simpleName]; exists {
-					// Found in same file
-					if calleeID != callerID {
-						edgeKey := callerID + "->" + calleeID
-						if !seenLocal[edgeKey] {
-							seenLocal[edgeKey] = true
-							*localCalls = append(*localCalls, CallsEdge{
-								CallerID: callerID,
-								CalleeID: calleeID,
-							})
-						}
-					}
-				} else if fullName != "" {
-					// Unresolved - store for cross-package resolution
-					callLine := int(node.StartPoint().Row) + 1
-					key := callerID + "->" + fullName
-					if !seenUnresolved[key] {
-						seenUnresolved[key] = true
-						*unresolvedCalls = append(*unresolvedCalls, UnresolvedCall{
-							CallerID:   callerID,
-							CalleeName: fullName,
-							FilePath:   filePath,
-							Line:       callLine,
-						})
-					}
-				}
-			}
-		}
+		p.processGoCallExpression(node, content, callerID, funcNameToID, filePath,
+			localCalls, unresolvedCalls, seenLocal, seenUnresolved)
 	}
 
 	// Recurse into children
@@ -737,6 +702,67 @@ func (p *TreeSitterParser) walkGoCallExpressionsV2(
 		child := node.Child(i)
 		p.walkGoCallExpressionsV2(child, content, callerID, funcNameToID, filePath,
 			localCalls, unresolvedCalls, seenLocal, seenUnresolved)
+	}
+}
+
+// processGoCallExpression processes a single call expression node, categorizing
+// it as a local call, an unresolved cross-package call, or a self-name field call.
+func (p *TreeSitterParser) processGoCallExpression(
+	node *sitter.Node, content []byte, callerID string,
+	funcNameToID map[string]string, filePath string,
+	localCalls *[]CallsEdge, unresolvedCalls *[]UnresolvedCall,
+	seenLocal, seenUnresolved map[string]bool,
+) {
+	funcNode := node.ChildByFieldName("function")
+	if funcNode == nil {
+		return
+	}
+
+	simpleName := p.extractGoCalleeName(funcNode, content)
+	fullName := p.extractGoCalleeNameFull(funcNode, content)
+
+	if simpleName == "" {
+		return
+	}
+
+	calleeID, exists := funcNameToID[simpleName]
+	if exists {
+		if calleeID != callerID {
+			// Local call to a different function in the same file
+			edgeKey := callerID + "->" + calleeID
+			if !seenLocal[edgeKey] {
+				seenLocal[edgeKey] = true
+				*localCalls = append(*localCalls, CallsEdge{CallerID: callerID, CalleeID: calleeID})
+			}
+		} else if fullName != "" && fullName != simpleName {
+			// Self-name match but different full name: e.g., Query() calling
+			// b.db.Query() — simpleName "Query" matches self, but fullName
+			// "b.db.Query" is a field method call through a different target.
+			p.addUnresolvedCall(node, callerID, fullName, filePath, unresolvedCalls, seenUnresolved)
+		}
+		return
+	}
+
+	if fullName != "" {
+		p.addUnresolvedCall(node, callerID, fullName, filePath, unresolvedCalls, seenUnresolved)
+	}
+}
+
+// addUnresolvedCall stores an unresolved call if not already seen.
+func (p *TreeSitterParser) addUnresolvedCall(
+	node *sitter.Node, callerID, calleeName, filePath string,
+	unresolvedCalls *[]UnresolvedCall, seenUnresolved map[string]bool,
+) {
+	callLine := int(node.StartPoint().Row) + 1
+	key := callerID + "->" + calleeName
+	if !seenUnresolved[key] {
+		seenUnresolved[key] = true
+		*unresolvedCalls = append(*unresolvedCalls, UnresolvedCall{
+			CallerID:   callerID,
+			CalleeName: calleeName,
+			FilePath:   filePath,
+			Line:       callLine,
+		})
 	}
 }
 
