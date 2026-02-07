@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	mcpVersion    = "1.10.0" // Concrete field dispatch, param dispatch, external stubs, embedded interface resolution
+	mcpVersion    = "1.10.1" // Fix external stub validation, correct reset --force to --yes
 	mcpServerName = "cie"
 )
 

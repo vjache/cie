@@ -5,6 +5,15 @@ All notable changes to CIE (Code Intelligence Engine) will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.6] - 2026-02-07
+
+### Fixed
+- **External stub validation failure** — Synthetic stub functions for external types (e.g., `sql.DB.Query`) had `StartLine=0, EndLine=0`, which failed the entity validator during indexing. Now set to valid placeholder values.
+- **Incorrect `cie reset --force` in error messages** — Error messages and documentation recommended the non-existent `--force` flag. Corrected to `cie reset --yes` across CLI error output, doc comments, and exit-codes documentation.
+
+### Changed
+- MCP server version bumped to 1.10.1.
+
 ## [0.7.5] - 2026-02-07
 
 ### Added
@@ -266,7 +275,8 @@ Initial open source release of CIE (Code Intelligence Engine).
 - No hardcoded credentials in codebase
 - All API keys via environment variables only
 
-[unreleased]: https://github.com/kraklabs/cie/compare/v0.7.5...HEAD
+[unreleased]: https://github.com/kraklabs/cie/compare/v0.7.6...HEAD
+[0.7.6]: https://github.com/kraklabs/cie/compare/v0.7.5...v0.7.6
 [0.7.5]: https://github.com/kraklabs/cie/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/kraklabs/cie/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/kraklabs/cie/compare/v0.7.2...v0.7.3
