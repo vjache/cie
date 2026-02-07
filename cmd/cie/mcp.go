@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	mcpVersion    = "1.9.0" // Case-insensitive search, fuzzy suggestions, find-by-signature
+	mcpVersion    = "1.10.0" // Concrete field dispatch, param dispatch, external stubs, embedded interface resolution
 	mcpServerName = "cie"
 )
 
@@ -120,23 +120,23 @@ Follow this progression for most code exploration tasks:
 
 ### Code Navigation Tools
 
-**cie_find_function** — Find functions by name. Handles Go receiver syntax (searching "Batch" finds "Batcher.Batch"). Use exact_match=true for precise lookups, include_code=true to get source inline.
+**cie_find_function** — Find functions by name. Handles Go receiver syntax (searching "Batch" finds "Batcher.Batch"). Use exact_match=true for precise lookups, include_code=true to get source inline. If no functions match, suggests cie_find_type when the name matches a type.
 
 **cie_get_function_code** — Get full source code of a function. Always use full_code=true for long functions — without it, output may be truncated.
 
 **cie_find_callers** — Who calls this function? Set include_indirect=true for transitive callers (callers of callers).
 
-**cie_find_callees** — What does this function call? Shows all outgoing dependencies.
+**cie_find_callees** — What does this function call? Shows all outgoing dependencies. Resolves method calls through both interface-typed and concrete-typed struct fields (e.g., b.db.Run() where db is *CozoDB). Also resolves calls through interface-typed function parameters.
 
 **cie_get_call_graph** — Combined view: both callers and callees in one call.
 
-**cie_trace_path** — Trace execution path from entry point to target function. Auto-detects entry points (main for Go, index exports for JS/TS, __main__ for Python). Use source parameter to trace between arbitrary functions. Increase max_depth for deeply nested targets.
+**cie_trace_path** — Trace execution path from entry point to target function. Auto-detects entry points (main for Go, index exports for JS/TS, __main__ for Python). Use source parameter to trace between arbitrary functions. Increase max_depth for deeply nested targets. Resolves calls through concrete struct fields and interface parameters with fan-out reduction.
 
 ### Type & Interface Tools
 
 **cie_find_type** — Find types, structs, interfaces, classes by name. Filter by kind: "struct", "interface", "class", "type_alias".
 
-**cie_find_implementations** — Find concrete types that implement an interface. Works for Go (struct method matching) and TypeScript (implements keyword).
+**cie_find_implementations** — Find concrete types that implement an interface. Works for Go (struct method matching) and TypeScript (implements keyword). Resolves embedded interfaces (e.g., ReadWriter embedding Reader+Writer) and common stdlib interfaces.
 
 **cie_find_by_signature** — Find functions by parameter type or return type. Searches function signatures for a given base type name, matching regardless of pointer/slice/package prefix. Useful for discovering which functions accept a specific interface or struct.
 

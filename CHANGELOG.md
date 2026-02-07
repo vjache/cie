@@ -5,6 +5,20 @@ All notable changes to CIE (Code Intelligence Engine) will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.5] - 2026-02-07
+
+### Added
+- **Concrete field method dispatch** — Call graph now resolves method calls through concrete-typed struct fields (e.g., `b.db.Run()` where `db` is `*CozoDB`). Previously only interface-typed fields were resolved. Works at both ingestion time and query time in `cie_find_callees` and `cie_trace_path`.
+- **External type stubs** — When a struct field references an external type not in the index (e.g., `sql.DB`, `http.Client`), CIE generates synthetic stub entries so the call graph shows the dependency boundary rather than silently dropping the edge.
+- **Embedded interface resolution** — `BuildImplementsIndex` now resolves embedded interfaces (e.g., `ReadWriter` embedding `Reader` + `Writer`) by inheriting methods from embedded types. Includes a stdlib fallback map for common interfaces (`io.Reader`, `fmt.Stringer`, etc.).
+- **Parameter-based dispatch in `FindCallees`** — `cie_find_callees` now resolves interface calls through function parameter types, matching the existing behavior of `cie_trace_path`.
+- **Fan-out reduction** — Parameter-based dispatch in `cie_trace_path` now filters results to only include methods that match direct callees, preventing BFS explosion when an interface has many implementations.
+- **Type suggestion in `FindFunction`** — When `cie_find_function` returns no results, it checks if the name matches a type and suggests using `cie_find_type` instead.
+
+### Changed
+- `resolveToImplementations` renamed `interfaceType` parameter to `fieldType` since it now handles both interface and concrete types.
+- MCP server version bumped to 1.10.0 with updated tool descriptions.
+
 ## [0.7.4] - 2026-02-07
 
 ### Added
@@ -252,7 +266,8 @@ Initial open source release of CIE (Code Intelligence Engine).
 - No hardcoded credentials in codebase
 - All API keys via environment variables only
 
-[unreleased]: https://github.com/kraklabs/cie/compare/v0.7.4...HEAD
+[unreleased]: https://github.com/kraklabs/cie/compare/v0.7.5...HEAD
+[0.7.5]: https://github.com/kraklabs/cie/compare/v0.7.4...v0.7.5
 [0.7.4]: https://github.com/kraklabs/cie/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/kraklabs/cie/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/kraklabs/cie/compare/v0.7.1...v0.7.2
