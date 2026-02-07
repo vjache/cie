@@ -63,7 +63,9 @@ func TracePath(ctx context.Context, client Querier, args TracePathArgs) (*ToolRe
 	}
 	targets := findFunctionsByName(ctx, client, args.Target, args.PathPattern)
 	if len(targets) == 0 {
-		return NewResult(fmt.Sprintf("Target function '%s' not found.", args.Target)), nil
+		return NewResult(notFoundWithSuggestions(ctx, client,
+			fmt.Sprintf("Target function '%s' not found.", args.Target),
+			args.Target, args.PathPattern)), nil
 	}
 
 	// Build target set for quick lookup
@@ -123,15 +125,19 @@ func traceWithWaypoints(ctx context.Context, client Querier, args TracePathArgs)
 				sources = detectEntryPoints(ctx, client, args.PathPattern)
 			}
 			if len(sources) == 0 {
-				return NewResult(fmt.Sprintf("Waypoint segment failed: function '%s' not found (segment %d: %s → %s).",
-					segSource, i+1, segSource, segTarget)), nil
+				return NewResult(notFoundWithSuggestions(ctx, client,
+					fmt.Sprintf("Waypoint segment failed: function '%s' not found (segment %d: %s → %s).",
+						segSource, i+1, segSource, segTarget),
+					segSource, args.PathPattern)), nil
 			}
 		}
 
 		targets := findFunctionsByName(ctx, client, segTarget, args.PathPattern)
 		if len(targets) == 0 {
-			return NewResult(fmt.Sprintf("Waypoint segment failed: function '%s' not found (segment %d: %s → %s).",
-				segTarget, i+1, segSource, segTarget)), nil
+			return NewResult(notFoundWithSuggestions(ctx, client,
+				fmt.Sprintf("Waypoint segment failed: function '%s' not found (segment %d: %s → %s).",
+					segTarget, i+1, segSource, segTarget),
+				segTarget, args.PathPattern)), nil
 		}
 
 		targetSet := make(map[string]bool)
@@ -194,7 +200,9 @@ func getTraceSources(ctx context.Context, client Querier, args TracePathArgs) ([
 	}
 	sources := findFunctionsByName(ctx, client, args.Source, args.PathPattern)
 	if len(sources) == 0 {
-		return nil, fmt.Errorf("source function %q not found", args.Source)
+		return nil, fmt.Errorf("%s", notFoundWithSuggestions(ctx, client,
+			fmt.Sprintf("source function %q not found", args.Source),
+			args.Source, args.PathPattern))
 	}
 	return sources, nil
 }
@@ -451,9 +459,10 @@ func detectEntryPoints(ctx context.Context, client Querier, pathPattern string) 
 // findFunctionsByName finds functions matching a name pattern
 func findFunctionsByName(ctx context.Context, client Querier, name, pathPattern string) []TraceFuncInfo {
 	var conditions []string
-	// Try exact match first, then suffix match for method names (e.g., "Run" matches "Agent.Run")
-	// Use OR condition: exact match OR ends with .name
-	conditions = append(conditions, fmt.Sprintf("(name = %q or ends_with(name, %q))", name, "."+name))
+	// Case-insensitive match: exact name OR method suffix (e.g., "Run" matches "Agent.Run")
+	namePattern := fmt.Sprintf("(?i)^%s$", EscapeRegex(name))
+	methodPattern := fmt.Sprintf("(?i)[.]%s$", EscapeRegex(name))
+	conditions = append(conditions, fmt.Sprintf("(regex_matches(name, %q) or regex_matches(name, %q))", namePattern, methodPattern))
 	if pathPattern != "" {
 		conditions = append(conditions, fmt.Sprintf("regex_matches(file_path, %q)", pathPattern))
 	}
@@ -733,6 +742,63 @@ func extractStructName(funcName string) string {
 		return funcName[:idx]
 	}
 	return ""
+}
+
+// findFunctionSuggestions queries for functions with similar names when a lookup fails.
+// Uses case-insensitive substring match to suggest alternatives.
+func findFunctionSuggestions(ctx context.Context, client Querier, name, pathPattern string, limit int) []TraceFuncInfo {
+	if limit <= 0 {
+		limit = 5
+	}
+
+	var conditions []string
+	// Substring match: name contains the search term (case-insensitive)
+	conditions = append(conditions, fmt.Sprintf("regex_matches(name, \"(?i)%s\")", EscapeRegex(name)))
+	if pathPattern != "" {
+		conditions = append(conditions, fmt.Sprintf("regex_matches(file_path, %q)", pathPattern))
+	}
+
+	script := fmt.Sprintf(
+		"?[name, file_path, start_line] := *cie_function { name, file_path, start_line }, %s :limit %d",
+		strings.Join(conditions, ", "),
+		limit,
+	)
+
+	result, err := client.Query(ctx, script)
+	if err != nil || len(result.Rows) == 0 {
+		return nil
+	}
+
+	var ret []TraceFuncInfo
+	for _, row := range result.Rows {
+		ret = append(ret, TraceFuncInfo{
+			Name:     AnyToString(row[0]),
+			FilePath: AnyToString(row[1]),
+			Line:     AnyToString(row[2]),
+		})
+	}
+	return ret
+}
+
+// notFoundWithSuggestions appends "Did you mean?" suggestions to a not-found message.
+func notFoundWithSuggestions(ctx context.Context, client Querier, msg, name, pathPattern string) string {
+	if suggestions := findFunctionSuggestions(ctx, client, name, pathPattern, 5); len(suggestions) > 0 {
+		msg += formatSuggestions(suggestions)
+	}
+	return msg
+}
+
+// formatSuggestions formats function suggestions as a "Did you mean?" block.
+func formatSuggestions(suggestions []TraceFuncInfo) string {
+	if len(suggestions) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("\n**Did you mean?**\n")
+	for _, fn := range suggestions {
+		fmt.Fprintf(&sb, "- `%s` (%s:%s)\n", fn.Name, fn.FilePath, fn.Line)
+	}
+	return sb.String()
 }
 
 // formatSources formats the source list for display

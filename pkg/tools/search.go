@@ -24,6 +24,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+
+	"github.com/kraklabs/cie/pkg/sigparse"
 )
 
 // SearchTextArgs holds arguments for text search.
@@ -144,8 +146,10 @@ func FindFunction(ctx context.Context, client Querier, args FindFunctionArgs) (*
 	if args.ExactMatch {
 		condition = fmt.Sprintf("name = %q", args.Name)
 	} else {
-		// Match exact name OR methods ending with .Name
-		condition = fmt.Sprintf("(name = %q or ends_with(name, %q))", args.Name, "."+args.Name)
+		// Case-insensitive match: exact name OR methods ending with .Name
+		namePattern := fmt.Sprintf("(?i)^%s$", EscapeRegex(args.Name))
+		methodPattern := fmt.Sprintf("(?i)[.]%s$", EscapeRegex(args.Name))
+		condition = fmt.Sprintf("(regex_matches(name, %q) or regex_matches(name, %q))", namePattern, methodPattern)
 	}
 
 	// Schema v3: Join with cie_function_code only when include_code is true
@@ -332,6 +336,227 @@ func rowKey(row []any) string {
 		sb.WriteString(AnyToString(v))
 	}
 	return sb.String()
+}
+
+// FindBySignatureArgs holds arguments for finding functions by parameter or return type.
+type FindBySignatureArgs struct {
+	ParamType      string // Filter: functions with this param type (e.g., "Backend", "Querier")
+	ReturnType     string // Filter: functions returning this type (e.g., "error", "Client")
+	PathPattern    string // Scope to path
+	ExcludePattern string // Exclude files matching pattern
+	Limit          int
+}
+
+// sigMatchInfo holds a matched function for FindBySignature results.
+type sigMatchInfo struct {
+	Name      string
+	FilePath  string
+	Signature string
+	Line      string
+	ParamName string // matched param name (for param_type matches)
+	ParamType string // matched param type
+}
+
+// FindBySignature searches functions by parameter type and/or return type.
+// Uses regex on the signature field for a coarse filter, then post-filters with
+// sigparse.ParseGoParams for precise parameter type matching.
+func FindBySignature(ctx context.Context, client Querier, args FindBySignatureArgs) (*ToolResult, error) {
+	if args.ParamType == "" && args.ReturnType == "" {
+		return NewError("Error: at least one of 'param_type' or 'return_type' is required"), nil
+	}
+	if args.Limit <= 0 {
+		args.Limit = 20
+	}
+
+	script := buildSignatureQuery(args)
+	result, err := client.Query(ctx, script)
+	if err != nil {
+		return NewError(fmt.Sprintf("Query error: %v\n\nGenerated query:\n%s", err, script)), nil
+	}
+
+	matches := filterSignatureMatches(result.Rows, args)
+	return NewResult(formatSignatureMatches(matches, args)), nil
+}
+
+// buildSignatureQuery constructs the CozoScript query for signature-based search.
+func buildSignatureQuery(args FindBySignatureArgs) string {
+	var conditions []string
+	if args.ParamType != "" {
+		conditions = append(conditions, fmt.Sprintf("regex_matches(signature, \"(?i)%s\")", EscapeRegex(args.ParamType)))
+	}
+	if args.ReturnType != "" {
+		conditions = append(conditions, fmt.Sprintf("regex_matches(signature, \"(?i)%s\")", EscapeRegex(args.ReturnType)))
+	}
+	if args.PathPattern != "" {
+		conditions = append(conditions, fmt.Sprintf("regex_matches(file_path, %q)", args.PathPattern))
+	}
+	if args.ExcludePattern != "" {
+		conditions = append(conditions, fmt.Sprintf("negate(regex_matches(file_path, %q))", args.ExcludePattern))
+	}
+
+	fetchLimit := args.Limit * 5
+	if fetchLimit < 100 {
+		fetchLimit = 100
+	}
+
+	return fmt.Sprintf(
+		"?[name, file_path, signature, start_line] := *cie_function { name, file_path, signature, start_line }, %s :limit %d",
+		strings.Join(conditions, ", "),
+		fetchLimit,
+	)
+}
+
+// filterSignatureMatches post-filters query results for precise type matching.
+func filterSignatureMatches(rows [][]any, args FindBySignatureArgs) []sigMatchInfo {
+	var matches []sigMatchInfo
+	for _, row := range rows {
+		if m, ok := matchSignatureRow(row, args); ok {
+			matches = append(matches, m)
+			if len(matches) >= args.Limit {
+				break
+			}
+		}
+	}
+	return matches
+}
+
+// matchSignatureRow checks if a single row matches the signature criteria.
+func matchSignatureRow(row []any, args FindBySignatureArgs) (sigMatchInfo, bool) {
+	sig := AnyToString(row[2])
+	m := sigMatchInfo{
+		Name:      AnyToString(row[0]),
+		FilePath:  AnyToString(row[1]),
+		Signature: sig,
+		Line:      AnyToString(row[3]),
+	}
+
+	if args.ParamType != "" {
+		params := sigparse.ParseGoParams(sig)
+		found := false
+		for _, p := range params {
+			if strings.EqualFold(p.Type, args.ParamType) {
+				m.ParamName = p.Name
+				m.ParamType = p.Type
+				found = true
+				break
+			}
+		}
+		if !found {
+			return m, false
+		}
+	}
+
+	if args.ReturnType != "" {
+		returnPart := extractReturnPart(sig)
+		if returnPart == "" || !containsCaseInsensitive(returnPart, args.ReturnType) {
+			return m, false
+		}
+	}
+
+	return m, true
+}
+
+// formatSignatureMatches formats the results of a signature-based search.
+func formatSignatureMatches(matches []sigMatchInfo, args FindBySignatureArgs) string {
+	var sb strings.Builder
+	switch {
+	case args.ParamType != "" && args.ReturnType != "":
+		fmt.Fprintf(&sb, "## Functions with parameter type `%s` and return type `%s`\n\n", args.ParamType, args.ReturnType)
+	case args.ParamType != "":
+		fmt.Fprintf(&sb, "## Functions with parameter type `%s`\n\n", args.ParamType)
+	default:
+		fmt.Fprintf(&sb, "## Functions with return type `%s`\n\n", args.ReturnType)
+	}
+
+	if len(matches) == 0 {
+		sb.WriteString("No matching functions found.\n")
+		return sb.String()
+	}
+
+	fmt.Fprintf(&sb, "Found %d function(s):\n\n", len(matches))
+	for _, m := range matches {
+		fmt.Fprintf(&sb, "**%s** (%s:%s)\n", m.Name, m.FilePath, m.Line)
+		if len(m.Signature) < 120 {
+			fmt.Fprintf(&sb, "  Signature: `%s`\n", m.Signature)
+		}
+		if m.ParamName != "" {
+			fmt.Fprintf(&sb, "  Parameter: `%s` (%s)\n", m.ParamName, m.ParamType)
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(matches) >= args.Limit {
+		fmt.Fprintf(&sb, "_Showing first %d results. Increase `limit` for more._\n", args.Limit)
+	}
+
+	return sb.String()
+}
+
+// extractReturnPart extracts the return type portion from a Go function signature.
+// Given "func (s *Server) Run(ctx Context) error", returns "error".
+// Given "func Foo() (int, error)", returns "(int, error)".
+func extractReturnPart(sig string) string {
+	// Find the parameter list closing paren, then everything after is returns
+	idx := strings.Index(sig, "func")
+	if idx == -1 {
+		return ""
+	}
+
+	// Skip past receiver if present
+	pos := idx + 4
+	pos = skipSpaces(sig, pos)
+	if pos < len(sig) && sig[pos] == '(' {
+		depth := 1
+		pos++
+		for pos < len(sig) && depth > 0 {
+			switch sig[pos] {
+			case '(':
+				depth++
+			case ')':
+				depth--
+			}
+			pos++
+		}
+	}
+
+	// Skip function name
+	pos = skipSpaces(sig, pos)
+	for pos < len(sig) && sig[pos] != '(' {
+		pos++
+	}
+	if pos >= len(sig) {
+		return ""
+	}
+
+	// Skip parameter list
+	depth := 1
+	pos++
+	for pos < len(sig) && depth > 0 {
+		switch sig[pos] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+		}
+		pos++
+	}
+
+	// Everything after is the return part
+	ret := strings.TrimSpace(sig[pos:])
+	return ret
+}
+
+// skipSpaces advances past whitespace.
+func skipSpaces(s string, pos int) int {
+	for pos < len(s) && (s[pos] == ' ' || s[pos] == '\t') {
+		pos++
+	}
+	return pos
+}
+
+// containsCaseInsensitive checks if s contains substr (case-insensitive).
+func containsCaseInsensitive(s, substr string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
 }
 
 // RawQueryArgs holds arguments for raw queries.
