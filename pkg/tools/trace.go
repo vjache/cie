@@ -554,11 +554,50 @@ func getCallees(ctx context.Context, client Querier, funcName string) []TraceFun
 		}
 	}
 
+	// 2b. Concrete field method dispatch (non-interface field types)
+	// For struct fields whose type is concrete (not found via cie_implements above),
+	// look up methods directly in cie_function.
+	if structName != "" {
+		concreteFieldScript := fmt.Sprintf(
+			`?[callee_name, callee_file, callee_line] :=
+				*cie_field { struct_name: %q, field_type },
+				field_prefix = concat(field_type, "."),
+				*cie_function { name: callee_name, file_path: callee_file, start_line: callee_line },
+				starts_with(callee_name, field_prefix)
+			:limit 50`,
+			structName,
+		)
+		concreteResult, err := client.Query(ctx, concreteFieldScript)
+		if err == nil {
+			for _, row := range concreteResult.Rows {
+				name := AnyToString(row[0])
+				if !seen[name] {
+					seen[name] = true
+					ret = append(ret, TraceFuncInfo{
+						Name:     name,
+						FilePath: AnyToString(row[1]),
+						Line:     AnyToString(row[2]),
+					})
+				}
+			}
+		}
+	}
+
 	// 3. Parameter-based interface dispatch (safety net for pre-fix indexes)
 	// For standalone functions or methods where field dispatch found nothing extra,
 	// query the function's signature, parse params, and resolve interface types.
+	// Collect direct callee names from Phase 1 for fan-out filtering.
+	directCalleeNames := make(map[string]bool)
+	for _, c := range ret {
+		if methodName := extractMethodName(c.Name); methodName != "" {
+			directCalleeNames[methodName] = true
+		} else if c.Name != "" {
+			// Unqualified callee name (e.g., "StoreFact") — use it directly
+			directCalleeNames[c.Name] = true
+		}
+	}
 	if structName == "" || len(ret) == 0 {
-		paramCallees := getCalleesViaParams(ctx, client, funcName, seen)
+		paramCallees := getCalleesViaParams(ctx, client, funcName, seen, directCalleeNames)
 		ret = append(ret, paramCallees...)
 	}
 
@@ -568,7 +607,8 @@ func getCallees(ctx context.Context, client Querier, funcName string) []TraceFun
 // getCalleesViaParams resolves interface dispatch through function parameters.
 // Queries the function's signature, parses parameter types, and for each interface-typed
 // parameter, finds concrete implementations and their methods.
-func getCalleesViaParams(ctx context.Context, client Querier, funcName string, seen map[string]bool) []TraceFuncInfo {
+// directCalleeNames filters results to only methods actually called (reduces fan-out).
+func getCalleesViaParams(ctx context.Context, client Querier, funcName string, seen map[string]bool, directCalleeNames map[string]bool) []TraceFuncInfo {
 	// Query the function's signature
 	sigScript := fmt.Sprintf(
 		`?[signature] := *cie_function { name, signature }, (name = %q or ends_with(name, %q)) :limit 1`,
@@ -615,6 +655,14 @@ func getCalleesViaParams(ctx context.Context, client Querier, funcName string, s
 
 		for _, row := range implResult.Rows {
 			name := AnyToString(row[0])
+			// Fan-out reduction: if we know which methods were actually called
+			// (from Phase 1 direct callees), only include matching methods.
+			if len(directCalleeNames) > 0 {
+				methodName := extractMethodName(name)
+				if methodName != "" && !directCalleeNames[methodName] {
+					continue
+				}
+			}
 			if !seen[name] {
 				seen[name] = true
 				ret = append(ret, TraceFuncInfo{
@@ -627,6 +675,15 @@ func getCalleesViaParams(ctx context.Context, client Querier, funcName string, s
 	}
 
 	return ret
+}
+
+// extractMethodName extracts the method name from a qualified function name.
+// e.g., "CIEClient.StoreFact" → "StoreFact", "main" → ""
+func extractMethodName(funcName string) string {
+	if idx := strings.LastIndex(funcName, "."); idx >= 0 && idx < len(funcName)-1 {
+		return funcName[idx+1:]
+	}
+	return ""
 }
 
 // isPrimitiveType returns true for Go built-in types that can never be interfaces.

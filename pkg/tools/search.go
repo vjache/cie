@@ -165,6 +165,24 @@ func FindFunction(ctx context.Context, client Querier, args FindFunctionArgs) (*
 		return NewError(fmt.Sprintf("Query error: %v\n\nGenerated query:\n%s", err, script)), nil
 	}
 
+	if len(result.Rows) == 0 {
+		// Check if the name matches a type (struct, interface, etc.)
+		typeScript := fmt.Sprintf(
+			`?[name, kind] := *cie_type { name, kind }, regex_matches(name, "(?i)%s") :limit 3`,
+			EscapeRegex(args.Name),
+		)
+		typeResult, typeErr := client.Query(ctx, typeScript)
+		if typeErr == nil && len(typeResult.Rows) > 0 {
+			var sb strings.Builder
+			sb.WriteString(FormatQueryResult(result, script))
+			sb.WriteString("\n\n**Did you mean a type?** Try `cie_find_type` instead:\n")
+			for _, row := range typeResult.Rows {
+				fmt.Fprintf(&sb, "- `%s` (%s)\n", AnyToString(row[0]), AnyToString(row[1]))
+			}
+			return NewResult(sb.String()), nil
+		}
+	}
+
 	return NewResult(FormatQueryResult(result, script)), nil
 }
 
@@ -267,12 +285,90 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
 
 		dispatchResult, dispatchErr := client.Query(ctx, dispatchScript)
 		if dispatchErr == nil && len(dispatchResult.Rows) > 0 {
-			// Merge results
 			result = mergeQueryResults(result, dispatchResult)
+		}
+
+		// Concrete field dispatch (non-interface fields like *CozoDB)
+		concreteScript := fmt.Sprintf(
+			`?[caller_name, callee_file, callee_name, callee_line] :=
+				caller_name = %q,
+				*cie_field { struct_name: %q, field_type },
+				field_prefix = concat(field_type, "."),
+				*cie_function { name: callee_name, file_path: callee_file, start_line: callee_line },
+				starts_with(callee_name, field_prefix)
+			:limit 50`,
+			args.FunctionName, structName,
+		)
+		concreteResult, concreteErr := client.Query(ctx, concreteScript)
+		if concreteErr == nil && len(concreteResult.Rows) > 0 {
+			result = mergeQueryResults(result, concreteResult)
+		}
+	}
+
+	// Parameter-based interface dispatch
+	if structName == "" || len(result.Rows) == 0 {
+		paramCallees := findCalleesViaParams(ctx, client, args.FunctionName)
+		if paramCallees != nil && len(paramCallees.Rows) > 0 {
+			result = mergeQueryResults(result, paramCallees)
 		}
 	}
 
 	return NewResult(FormatQueryResult(result, script)), nil
+}
+
+// findCalleesViaParams resolves interface dispatch through function parameter types.
+// Queries the function's signature, parses params, and finds implementations.
+func findCalleesViaParams(ctx context.Context, client Querier, funcName string) *QueryResult {
+	sigScript := fmt.Sprintf(
+		`?[signature] := *cie_function { name, signature }, (name = %q or ends_with(name, %q)) :limit 1`,
+		funcName, "."+funcName,
+	)
+	sigResult, err := client.Query(ctx, sigScript)
+	if err != nil || len(sigResult.Rows) == 0 {
+		return nil
+	}
+
+	sig := AnyToString(sigResult.Rows[0][0])
+	if sig == "" {
+		return nil
+	}
+
+	params := sigparse.ParseGoParams(sig)
+	if len(params) == 0 {
+		return nil
+	}
+
+	var combined *QueryResult
+	for _, p := range params {
+		if isPrimitiveType(p.Type) {
+			continue
+		}
+
+		implScript := fmt.Sprintf(
+			`?[caller_name, callee_file, callee_name, callee_line] :=
+				caller_name = %q,
+				*cie_implements { interface_name, type_name: impl_type },
+				(interface_name = %q or ends_with(interface_name, %q)),
+				impl_prefix = concat(impl_type, "."),
+				*cie_function { name: callee_name, file_path: callee_file, start_line: callee_line },
+				starts_with(callee_name, impl_prefix)
+			:limit 50`,
+			funcName, p.Type, "."+p.Type,
+		)
+
+		implResult, err := client.Query(ctx, implScript)
+		if err != nil || len(implResult.Rows) == 0 {
+			continue
+		}
+
+		if combined == nil {
+			combined = implResult
+		} else {
+			combined = mergeQueryResults(combined, implResult)
+		}
+	}
+
+	return combined
 }
 
 // ListFilesArgs holds arguments for listing files.
