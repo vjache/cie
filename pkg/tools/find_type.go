@@ -30,6 +30,7 @@ type FindTypeArgs struct {
 	Name        string // Type name to search for
 	Kind        string // Filter by kind: "any", "struct", "interface", "class", "type_alias"
 	PathPattern string // Optional file path filter
+	IncludeCode bool   // If true, include type source code (interface methods, struct fields)
 	Limit       int    // Max results (default 20)
 }
 
@@ -62,12 +63,21 @@ func FindType(ctx context.Context, client Querier, args FindTypeArgs) (*ToolResu
 		conditions = append(conditions, fmt.Sprintf("regex_matches(file_path, %q)", args.PathPattern))
 	}
 
-	// Build query - single line format like other tools
-	query := fmt.Sprintf(
-		"?[name, kind, file_path, start_line, end_line] := *cie_type { name, kind, file_path, start_line, end_line }, %s :limit %d",
-		strings.Join(conditions, ", "),
-		args.Limit,
-	)
+	// Build query - join with cie_type_code when include_code is requested
+	var query string
+	if args.IncludeCode {
+		query = fmt.Sprintf(
+			"?[name, kind, file_path, start_line, end_line, code_text] := *cie_type { id, name, kind, file_path, start_line, end_line }, *cie_type_code { type_id: id, code_text }, %s :limit %d",
+			strings.Join(conditions, ", "),
+			args.Limit,
+		)
+	} else {
+		query = fmt.Sprintf(
+			"?[name, kind, file_path, start_line, end_line] := *cie_type { name, kind, file_path, start_line, end_line }, %s :limit %d",
+			strings.Join(conditions, ", "),
+			args.Limit,
+		)
+	}
 
 	result, err := client.Query(ctx, query)
 	if err != nil {
@@ -101,7 +111,16 @@ func FindType(ctx context.Context, client Querier, args FindTypeArgs) (*ToolResu
 		startLine := AnyToString(row[3])
 
 		output += fmt.Sprintf("%d. **%s** (%s)\n", i+1, name, kind)
-		output += fmt.Sprintf("   File: %s:%s\n\n", filePath, startLine)
+		output += fmt.Sprintf("   File: %s:%s\n", filePath, startLine)
+
+		if args.IncludeCode && len(row) > 5 {
+			codeText := AnyToString(row[5])
+			if codeText != "" {
+				lang := detectLanguage(filePath)
+				output += fmt.Sprintf("   ```%s\n   %s\n   ```\n", lang, codeText)
+			}
+		}
+		output += "\n"
 	}
 
 	return NewResult(output), nil
