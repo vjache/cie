@@ -5,6 +5,15 @@ All notable changes to CIE (Code Intelligence Engine) will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.10] - 2026-02-07
+
+### Fixed
+- **Regression: trace_path broken on pre-v0.7.9 indexes** — The `call_line` column added in v0.7.9 caused query failures on indexes created with older schema versions. Phase 1 queries in `getCallees`, `FindCallers`, and `FindCallees` now fallback to queries without `call_line` when the column doesn't exist. Without this fix, `cie_trace_path` BFS traversal returned no results on older indexes.
+- **Auto-migration for cie_calls schema** — `EnsureSchema` now detects old `cie_calls` tables missing the `call_line` column and auto-migrates them (copy → recreate → restore). No manual re-index required.
+
+### Changed
+- MCP server version bumped to 1.13.1.
+
 ## [0.7.9] - 2026-02-07
 
 ### Added

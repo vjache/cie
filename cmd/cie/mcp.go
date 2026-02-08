@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	mcpVersion    = "1.13.0" // Callsite lines, find_type include_code, find_callees dedup
+	mcpVersion    = "1.13.1" // Backward-compatible call_line queries + schema migration
 	mcpServerName = "cie"
 )
 
