@@ -2050,4 +2050,4 @@ Set `full_code=true` parameter:
 
 **Last Updated:** 2026-02-07
 **Schema Version:** v3
-**CIE Version:** 0.7.11
+**CIE Version:** 0.7.12

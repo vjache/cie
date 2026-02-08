@@ -5,6 +5,18 @@ All notable changes to CIE (Code Intelligence Engine) will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.12] - 2026-02-07
+
+### Added
+- **Inline code in `cie_trace_path`** — New `include_code=true` parameter embeds function source code inline for each hop in the trace. Eliminates round-trips to `cie_get_function_code`. Use `code_lines` to control truncation (default: 10 lines).
+- **Interface dispatch annotations** — `cie_trace_path` now annotates edges that cross interface boundaries with `[via interface X]` (e.g., `[via interface Querier]`). Works for both struct field interfaces (Phase 2a) and function parameter interfaces (Phase 3).
+
+### Fixed
+- **ViaIface missing on Phase 1 results** — When a callee was found via direct `cie_calls` (Phase 1) AND also resolved through interface dispatch (Phase 2a/3), the interface annotation was lost because the `seen` map skipped duplicates. Now uses a post-hoc `ifaceMap` to annotate Phase 1 results with interface dispatch info discovered in later phases.
+
+### Changed
+- MCP server version bumped to 1.15.0.
+
 ## [0.7.11] - 2026-02-07
 
 ### Added
@@ -320,6 +332,7 @@ Initial open source release of CIE (Code Intelligence Engine).
 - All API keys via environment variables only
 
 [unreleased]: https://github.com/kraklabs/cie/compare/v0.7.11...HEAD
+[0.7.12]: https://github.com/kraklabs/cie/compare/v0.7.11...v0.7.12
 [0.7.11]: https://github.com/kraklabs/cie/compare/v0.7.10...v0.7.11
 [0.7.10]: https://github.com/kraklabs/cie/compare/v0.7.9...v0.7.10
 [0.7.9]: https://github.com/kraklabs/cie/compare/v0.7.8...v0.7.9
