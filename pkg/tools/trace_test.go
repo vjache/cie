@@ -515,7 +515,7 @@ func TestFormatTraceOutput_Unit_SinglePath(t *testing.T) {
 		nodesExplored: 100,
 	}
 
-	output := formatTraceOutput(sources, args, result)
+	output := formatTraceOutput(sources, args, result, nil)
 
 	if !strings.Contains(output, "main") {
 		t.Error("formatTraceOutput() should contain 'main'")
@@ -743,7 +743,7 @@ func TestFormatTraceOutput_Unit_MultiplePaths(t *testing.T) {
 		limitReached:  false,
 	}
 
-	output := formatTraceOutput(sources, args, result)
+	output := formatTraceOutput(sources, args, result, nil)
 
 	if !strings.Contains(output, "Path 1") {
 		t.Error("formatTraceOutput() should contain 'Path 1'")
@@ -777,7 +777,7 @@ func TestFormatTraceOutput_Unit_MaxPathsReached(t *testing.T) {
 		limitReached:  false,
 	}
 
-	output := formatTraceOutput(sources, args, result)
+	output := formatTraceOutput(sources, args, result, nil)
 
 	// Should show message about first N paths
 	if !strings.Contains(output, "first 2 paths") {
@@ -799,7 +799,7 @@ func TestFormatTraceOutput_Unit_LimitReached(t *testing.T) {
 		limitReached:  true,
 	}
 
-	output := formatTraceOutput(sources, args, result)
+	output := formatTraceOutput(sources, args, result, nil)
 
 	if !strings.Contains(output, "Search limit reached") {
 		t.Error("formatTraceOutput() should mention 'Search limit reached'")
@@ -1544,7 +1544,7 @@ func TestFormatTraceOutput_ViaIface(t *testing.T) {
 		nodesExplored: 10,
 	}
 
-	output := formatTraceOutput(sources, args, result)
+	output := formatTraceOutput(sources, args, result, nil)
 
 	if !strings.Contains(output, "[via interface Querier]") {
 		t.Errorf("formatTraceOutput() should contain '[via interface Querier]', got:\n%s", output)
@@ -1592,7 +1592,7 @@ func TestFormatTraceOutput_WithCode(t *testing.T) {
 		nodesExplored: 5,
 	}
 
-	output := formatTraceOutput(sources, args, result)
+	output := formatTraceOutput(sources, args, result, nil)
 
 	// Should contain code blocks
 	if !strings.Contains(output, "func main()") {
@@ -1627,7 +1627,7 @@ func TestFormatTraceOutput_WithoutCode(t *testing.T) {
 		nodesExplored: 5,
 	}
 
-	output := formatTraceOutput(sources, args, result)
+	output := formatTraceOutput(sources, args, result, nil)
 
 	// Default behavior: single code fence wrapping the path
 	if !strings.Contains(output, "```\n") {
@@ -1735,6 +1735,258 @@ func TestTracePath_Unit_IncludeCode(t *testing.T) {
 	}
 	if !strings.Contains(result.Text, "func target()") {
 		t.Errorf("TracePath with include_code should contain target's code, got:\n%s", result.Text)
+	}
+}
+
+// ============================================================================
+// Inline Type Definition Tests
+// ============================================================================
+
+// Test fetchTypesForPaths fetches type definitions for ViaIface and receiver structs
+func TestFetchTypesForPaths(t *testing.T) {
+	client := NewMockClientCustom(
+		func(ctx context.Context, script string) (*QueryResult, error) {
+			if strings.Contains(script, "cie_type") && strings.Contains(script, "cie_type_code") {
+				if strings.Contains(script, `"Querier"`) {
+					return &QueryResult{
+						Headers: []string{"name", "kind", "file_path", "start_line", "code_text"},
+						Rows: [][]any{{
+							"Querier", "interface", "pkg/tools/client.go", "10",
+							"type Querier interface {\n\tQuery(ctx context.Context, script string) (*QueryResult, error)\n}",
+						}},
+					}, nil
+				}
+				if strings.Contains(script, `"EmbeddedQuerier"`) {
+					return &QueryResult{
+						Headers: []string{"name", "kind", "file_path", "start_line", "code_text"},
+						Rows: [][]any{{
+							"EmbeddedQuerier", "struct", "pkg/tools/client_embedded.go", "30",
+							"type EmbeddedQuerier struct {\n\tbackend *EmbeddedBackend\n}",
+						}},
+					}, nil
+				}
+			}
+			return &QueryResult{Headers: []string{}, Rows: [][]any{}}, nil
+		},
+		nil,
+	)
+	ctx := context.Background()
+
+	paths := [][]TraceFuncInfo{
+		{
+			{Name: "main", FilePath: "cmd/main.go", Line: "1"},
+			{Name: "EmbeddedQuerier.Query", FilePath: "pkg/tools/client_embedded.go", Line: "42", ViaIface: "Querier"},
+		},
+	}
+
+	typeMap := fetchTypesForPaths(ctx, client, paths, 15)
+
+	if _, ok := typeMap["Querier"]; !ok {
+		t.Error("typeMap should contain 'Querier' from ViaIface")
+	}
+	if _, ok := typeMap["EmbeddedQuerier"]; !ok {
+		t.Error("typeMap should contain 'EmbeddedQuerier' from receiver struct")
+	}
+	if td := typeMap["Querier"]; td.Kind != "interface" {
+		t.Errorf("Querier kind = %q, want 'interface'", td.Kind)
+	}
+}
+
+// Test fetchTypesForPaths deduplicates — same type in multiple hops fetched once
+func TestFetchTypesForPaths_Dedup(t *testing.T) {
+	queryCount := 0
+	client := NewMockClientCustom(
+		func(ctx context.Context, script string) (*QueryResult, error) {
+			if strings.Contains(script, "cie_type") && strings.Contains(script, "cie_type_code") {
+				queryCount++
+				if strings.Contains(script, `"Querier"`) {
+					return &QueryResult{
+						Headers: []string{"name", "kind", "file_path", "start_line", "code_text"},
+						Rows: [][]any{{
+							"Querier", "interface", "pkg/tools/client.go", "10",
+							"type Querier interface {}",
+						}},
+					}, nil
+				}
+			}
+			return &QueryResult{Headers: []string{}, Rows: [][]any{}}, nil
+		},
+		nil,
+	)
+	ctx := context.Background()
+
+	paths := [][]TraceFuncInfo{
+		{
+			{Name: "main", FilePath: "cmd/main.go", Line: "1"},
+			{Name: "CIEClient.Query", FilePath: "pkg/client.go", Line: "50", ViaIface: "Querier"},
+			{Name: "EmbeddedQuerier.Query", FilePath: "pkg/embedded.go", Line: "30", ViaIface: "Querier"},
+		},
+	}
+
+	typeMap := fetchTypesForPaths(ctx, client, paths, 15)
+
+	// "Querier" appears twice via ViaIface, but should only be queried once
+	if _, ok := typeMap["Querier"]; !ok {
+		t.Error("typeMap should contain 'Querier'")
+	}
+	// Count queries for "Querier" — should be exactly 1
+	querierQueries := 0
+	for i := 0; i < queryCount; i++ {
+		querierQueries++ // each query call increments
+	}
+	// queryCount includes ALL type queries; Querier should be fetched once
+	// We also get CIEClient and EmbeddedQuerier as receiver structs
+	if queryCount > 3 {
+		t.Errorf("expected at most 3 type queries (Querier + CIEClient + EmbeddedQuerier), got %d", queryCount)
+	}
+}
+
+// Test formatTracePath with types shows interface definition inline
+func TestFormatTracePath_WithTypes(t *testing.T) {
+	typeMap := map[string]traceTypeDef{
+		"Querier": {
+			Kind:     "interface",
+			Code:     "type Querier interface {\n\tQuery(ctx context.Context, script string) (*QueryResult, error)\n}",
+			FilePath: "pkg/tools/client.go",
+			Line:     "10",
+		},
+	}
+
+	path := []TraceFuncInfo{
+		{Name: "main", FilePath: "cmd/main.go", Line: "1"},
+		{Name: "CIEClient.Query", FilePath: "pkg/client.go", Line: "50", ViaIface: "Querier"},
+	}
+
+	var sb strings.Builder
+	formatTracePath(&sb, path, false, typeMap)
+	output := sb.String()
+
+	if !strings.Contains(output, "interface **Querier**") {
+		t.Errorf("output should contain interface type header, got:\n%s", output)
+	}
+	if !strings.Contains(output, "type Querier interface") {
+		t.Errorf("output should contain interface code, got:\n%s", output)
+	}
+	// Should use rich mode (bold function names) when types are present
+	if !strings.Contains(output, "**main**") {
+		t.Errorf("output should use bold for function names when types present, got:\n%s", output)
+	}
+}
+
+// Test formatTracePath with receiver struct type shown inline
+func TestFormatTracePath_WithTypes_ReceiverStruct(t *testing.T) {
+	typeMap := map[string]traceTypeDef{
+		"EmbeddedQuerier": {
+			Kind:     "struct",
+			Code:     "type EmbeddedQuerier struct {\n\tbackend *EmbeddedBackend\n}",
+			FilePath: "pkg/tools/client_embedded.go",
+			Line:     "30",
+		},
+	}
+
+	path := []TraceFuncInfo{
+		{Name: "main", FilePath: "cmd/main.go", Line: "1"},
+		{Name: "EmbeddedQuerier.Query", FilePath: "pkg/tools/client_embedded.go", Line: "42"},
+	}
+
+	var sb strings.Builder
+	formatTracePath(&sb, path, false, typeMap)
+	output := sb.String()
+
+	if !strings.Contains(output, "struct **EmbeddedQuerier**") {
+		t.Errorf("output should contain struct type header, got:\n%s", output)
+	}
+	if !strings.Contains(output, "type EmbeddedQuerier struct") {
+		t.Errorf("output should contain struct code, got:\n%s", output)
+	}
+}
+
+// Test that types are shown only at first hop where they appear
+func TestFormatTracePath_TypesShownOnce(t *testing.T) {
+	typeMap := map[string]traceTypeDef{
+		"Querier": {
+			Kind:     "interface",
+			Code:     "type Querier interface {}",
+			FilePath: "pkg/tools/client.go",
+			Line:     "10",
+		},
+	}
+
+	path := []TraceFuncInfo{
+		{Name: "main", FilePath: "cmd/main.go", Line: "1"},
+		{Name: "CIEClient.Query", FilePath: "pkg/client.go", Line: "50", ViaIface: "Querier"},
+		{Name: "EmbeddedQuerier.Query", FilePath: "pkg/embedded.go", Line: "30", ViaIface: "Querier"},
+	}
+
+	var sb strings.Builder
+	formatTracePath(&sb, path, false, typeMap)
+	output := sb.String()
+
+	// Count occurrences of the type header
+	count := strings.Count(output, "interface **Querier**")
+	if count != 1 {
+		t.Errorf("Querier type should appear exactly once, got %d occurrences:\n%s", count, output)
+	}
+}
+
+// Test formatTracePath with both types and code
+func TestFormatTracePath_TypesAndCode(t *testing.T) {
+	typeMap := map[string]traceTypeDef{
+		"Querier": {
+			Kind:     "interface",
+			Code:     "type Querier interface {\n\tQuery() error\n}",
+			FilePath: "pkg/tools/client.go",
+			Line:     "10",
+		},
+	}
+
+	path := []TraceFuncInfo{
+		{Name: "main", FilePath: "cmd/main.go", Line: "1", Code: "func main() {\n\trun()\n}"},
+		{Name: "CIEClient.Query", FilePath: "pkg/client.go", Line: "50", ViaIface: "Querier", Code: "func (c *CIEClient) Query() error {\n\treturn nil\n}"},
+	}
+
+	var sb strings.Builder
+	formatTracePath(&sb, path, true, typeMap)
+	output := sb.String()
+
+	// Should have both type definitions and function code
+	if !strings.Contains(output, "interface **Querier**") {
+		t.Errorf("output should contain type definition, got:\n%s", output)
+	}
+	if !strings.Contains(output, "func main()") {
+		t.Errorf("output should contain function code, got:\n%s", output)
+	}
+	if !strings.Contains(output, "func (c *CIEClient) Query()") {
+		t.Errorf("output should contain callee function code, got:\n%s", output)
+	}
+}
+
+// Test writeInlineType formatting
+func TestWriteInlineType(t *testing.T) {
+	td := traceTypeDef{
+		Kind:     "interface",
+		Code:     "type Querier interface {\n\tQuery() error\n}",
+		FilePath: "pkg/tools/client.go",
+		Line:     "10",
+	}
+
+	var sb strings.Builder
+	writeInlineType(&sb, "Querier", td, "  ")
+	output := sb.String()
+
+	// Check header format
+	if !strings.Contains(output, "  ") {
+		t.Error("output should be indented")
+	}
+	if !strings.Contains(output, "_interface **Querier** (client.go:10):_") {
+		t.Errorf("output should contain formatted header, got:\n%s", output)
+	}
+	// Check code fence
+	if !strings.Contains(output, "```go") {
+		t.Error("output should contain go code fence")
+	}
+	if !strings.Contains(output, "type Querier interface") {
+		t.Error("output should contain type code")
 	}
 }
 

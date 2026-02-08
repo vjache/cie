@@ -46,8 +46,10 @@ type TracePathArgs struct {
 	MaxPaths    int
 	MaxDepth    int
 	Waypoints   []string // Intermediate functions the path must pass through, in order
-	IncludeCode bool     // If true, embed function source code inline in output
-	CodeLines   int      // Max lines of code to show per function (default 10)
+	IncludeCode  bool     // If true, embed function source code inline in output
+	CodeLines    int      // Max lines of code to show per function (default 10)
+	IncludeTypes bool     // If true, embed interface/struct definitions inline
+	TypeLines    int      // Max lines per type definition (default 15)
 }
 
 // TracePath traces call paths from source function(s) to a target function.
@@ -101,7 +103,13 @@ func TracePath(ctx context.Context, client Querier, args TracePathArgs) (*ToolRe
 		fetchCodeForPaths(ctx, client, searchResult.paths, args.CodeLines)
 	}
 
-	return NewResult(formatTraceOutput(sources, args, searchResult)), nil
+	// Fetch type definitions if requested
+	var typeMap map[string]traceTypeDef
+	if args.IncludeTypes {
+		typeMap = fetchTypesForPaths(ctx, client, searchResult.paths, args.TypeLines)
+	}
+
+	return NewResult(formatTraceOutput(sources, args, searchResult, typeMap)), nil
 }
 
 // traceWithWaypoints chains BFS segments through waypoints: source → wp1 → wp2 → ... → target.
@@ -187,11 +195,17 @@ func traceWithWaypoints(ctx context.Context, client Querier, args TracePathArgs)
 		fetchCodeForPaths(ctx, client, [][]TraceFuncInfo{fullPath}, args.CodeLines)
 	}
 
+	// Fetch type definitions if requested
+	var typeMap map[string]traceTypeDef
+	if args.IncludeTypes {
+		typeMap = fetchTypesForPaths(ctx, client, [][]TraceFuncInfo{fullPath}, args.TypeLines)
+	}
+
 	// Format output
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "## Call Path to `%s` (via %d waypoint(s))\n\n", args.Target, len(args.Waypoints))
 	fmt.Fprintf(&sb, "_Explored %d total nodes across %d segment(s)._\n\n", totalNodes, len(stops)-1)
-	formatTracePath(&sb, fullPath, args.IncludeCode)
+	formatTracePath(&sb, fullPath, args.IncludeCode, typeMap)
 
 	return NewResult(sb.String()), nil
 }
@@ -397,6 +411,67 @@ func truncateCodeLines(code string, maxLines int) string {
 	return strings.Join(lines[:maxLines], "\n") + "\n..."
 }
 
+// traceTypeDef holds a fetched type definition for inline display.
+type traceTypeDef struct {
+	Kind     string // "interface", "struct", etc.
+	Code     string // Truncated source code
+	FilePath string
+	Line     string
+}
+
+// fetchTypesForPaths collects unique type names from ViaIface and receiver structs
+// across all hops, fetches their definitions, and returns a map keyed by type name.
+func fetchTypesForPaths(ctx context.Context, client Querier, paths [][]TraceFuncInfo, typeLines int) map[string]traceTypeDef {
+	if typeLines <= 0 {
+		typeLines = 15
+	}
+
+	// Collect unique type names across all paths
+	seen := make(map[string]bool)
+	var typeNames []string
+	for _, path := range paths {
+		for _, fn := range path {
+			// Interface from dispatch annotation
+			if fn.ViaIface != "" && !seen[fn.ViaIface] {
+				seen[fn.ViaIface] = true
+				typeNames = append(typeNames, fn.ViaIface)
+			}
+			// Receiver struct from method name
+			if sn := extractStructName(fn.Name); sn != "" && !seen[sn] {
+				seen[sn] = true
+				typeNames = append(typeNames, sn)
+			}
+		}
+	}
+
+	// Fetch type definitions
+	typeMap := make(map[string]traceTypeDef, len(typeNames))
+	for _, name := range typeNames {
+		script := fmt.Sprintf(
+			`?[name, kind, file_path, start_line, code_text] :=
+				*cie_type { id, name, kind, file_path, start_line },
+				*cie_type_code { type_id: id, code_text },
+				(name = %q or ends_with(name, %q))
+			:limit 1`, name, "."+name)
+		result, err := client.Query(ctx, script)
+		if err != nil || len(result.Rows) == 0 {
+			continue
+		}
+		code := AnyToString(result.Rows[0][4])
+		if code == "" {
+			continue
+		}
+		typeMap[AnyToString(result.Rows[0][0])] = traceTypeDef{
+			Kind:     AnyToString(result.Rows[0][1]),
+			Code:     truncateCodeLines(code, typeLines),
+			FilePath: AnyToString(result.Rows[0][2]),
+			Line:     AnyToString(result.Rows[0][3]),
+		}
+	}
+
+	return typeMap
+}
+
 // formatTraceNotFound formats the output when no paths are found.
 func formatTraceNotFound(sources []TraceFuncInfo, args TracePathArgs, result traceSearchResult) string {
 	var sb strings.Builder
@@ -445,7 +520,7 @@ func formatTraceNotFound(sources []TraceFuncInfo, args TracePathArgs, result tra
 }
 
 // formatTraceOutput formats the output when paths are found.
-func formatTraceOutput(sources []TraceFuncInfo, args TracePathArgs, result traceSearchResult) string {
+func formatTraceOutput(sources []TraceFuncInfo, args TracePathArgs, result traceSearchResult, typeMap map[string]traceTypeDef) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "## Call Paths to `%s`\n\n", args.Target)
 	fmt.Fprintf(&sb, "Found %d path(s) from %s\n", len(result.paths), formatSources(sources, args.Source == ""))
@@ -453,7 +528,7 @@ func formatTraceOutput(sources []TraceFuncInfo, args TracePathArgs, result trace
 
 	for i, path := range result.paths {
 		fmt.Fprintf(&sb, "### Path %d (depth: %d)\n\n", i+1, len(path)-1)
-		formatTracePath(&sb, path, args.IncludeCode)
+		formatTracePath(&sb, path, args.IncludeCode, typeMap)
 		sb.WriteString("\n")
 	}
 
@@ -468,10 +543,15 @@ func formatTraceOutput(sources []TraceFuncInfo, args TracePathArgs, result trace
 
 // formatTracePath writes a single trace path to the builder.
 // If includeCode is true, renders each hop with its source code.
-func formatTracePath(sb *strings.Builder, path []TraceFuncInfo, includeCode bool) {
-	if !includeCode {
+// If typeMap is non-nil, renders interface/struct definitions inline at first appearance.
+func formatTracePath(sb *strings.Builder, path []TraceFuncInfo, includeCode bool, typeMap map[string]traceTypeDef) {
+	hasTypes := len(typeMap) > 0
+	// Use rich mode (bold + fences) if code or types are present
+	richMode := includeCode || hasTypes
+	if !richMode {
 		sb.WriteString("```\n")
 	}
+	shownTypes := make(map[string]bool)
 	for j, fn := range path {
 		indent := strings.Repeat("  ", j)
 		arrow := ""
@@ -488,18 +568,61 @@ func formatTracePath(sb *strings.Builder, path []TraceFuncInfo, includeCode bool
 			locInfo += fmt.Sprintf("  [called at %s:%s]", prevFile, fn.CallLine)
 		}
 
-		if includeCode {
+		if richMode {
 			fmt.Fprintf(sb, "%s%s**%s**\n", indent, arrow, nameStr)
 			fmt.Fprintf(sb, "%s   %s\n", indent, locInfo)
+			// Write type definitions (interface from ViaIface, receiver struct)
+			if hasTypes {
+				if fn.ViaIface != "" {
+					writeTypeIfNew(sb, fn.ViaIface, typeMap, shownTypes, indent)
+				}
+				if sn := extractStructName(fn.Name); sn != "" {
+					writeTypeIfNew(sb, sn, typeMap, shownTypes, indent)
+				}
+			}
 			writeInlineCode(sb, fn, indent)
 		} else {
 			fmt.Fprintf(sb, "%s%s%s\n", indent, arrow, nameStr)
 			fmt.Fprintf(sb, "%s   %s\n", indent, locInfo)
 		}
 	}
-	if !includeCode {
+	if !richMode {
 		sb.WriteString("```\n")
 	}
+}
+
+// writeTypeIfNew writes a type definition inline if it hasn't been shown yet.
+func writeTypeIfNew(sb *strings.Builder, name string, typeMap map[string]traceTypeDef, shown map[string]bool, indent string) {
+	if shown[name] {
+		return
+	}
+	// Look up by exact name or by qualified suffix
+	td, ok := typeMap[name]
+	if !ok {
+		for k, v := range typeMap {
+			if k == name || strings.HasSuffix(k, "."+name) {
+				td = v
+				ok = true
+				break
+			}
+		}
+	}
+	if !ok {
+		return
+	}
+	shown[name] = true
+	writeInlineType(sb, name, td, indent)
+}
+
+// writeInlineType writes a type definition block with indentation.
+func writeInlineType(sb *strings.Builder, name string, td traceTypeDef, indent string) {
+	fmt.Fprintf(sb, "%s   _%s **%s** (%s:%s):_\n", indent, td.Kind, name, ExtractFileName(td.FilePath), td.Line)
+	lang := detectLanguage(td.FilePath)
+	fmt.Fprintf(sb, "%s   ```%s\n", indent, lang)
+	for _, line := range strings.Split(td.Code, "\n") {
+		fmt.Fprintf(sb, "%s   %s\n", indent, line)
+	}
+	fmt.Fprintf(sb, "%s   ```\n", indent)
 }
 
 // writeInlineCode writes a code block for a function with indentation.
