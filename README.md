@@ -4,6 +4,10 @@
 
   <img src="docs/cie-demo.gif" alt="CIE Demo" width="800">
 
+  <blockquote>
+    <p><em>In practice: Tracing a call graph through MIE's codebase, Claude Code needed 34 tool calls without CIE. With CIE, it needed 3. Results vary by query, but structured code intelligence consistently reduces agent round-trips.</em></p>
+  </blockquote>
+
   [![Release](https://github.com/kraklabs/cie/actions/workflows/release.yml/badge.svg)](https://github.com/kraklabs/cie/actions/workflows/release.yml)
   [![codecov](https://codecov.io/gh/kraklabs/cie/branch/main/graph/badge.svg)](https://codecov.io/gh/kraklabs/cie)
   [![Go Report Card](https://goreportcard.com/badge/github.com/kraklabs/cie)](https://goreportcard.com/report/github.com/kraklabs/cie)
