@@ -875,3 +875,186 @@ func TestContainsCaseInsensitive(t *testing.T) {
 		}
 	}
 }
+
+// Test FindCallers with include_indirect=true (BFS expansion)
+func TestFindCallers_IncludeIndirect(t *testing.T) {
+	// Build a chain: Gamma -> Beta -> Alpha (Alpha is the target)
+	// FindCallers("Alpha") should return Beta (direct), then with include_indirect=true also Gamma
+	client := NewMockClientCustom(
+		func(ctx context.Context, script string) (*QueryResult, error) {
+			// Direct callers of Alpha
+			if strings.Contains(script, `callee_name = "Alpha"`) {
+				return &QueryResult{
+					Headers: []string{"caller_file", "caller_name", "caller_line", "callee_name"},
+					Rows: [][]any{
+						{"pkg/b.go", "Beta", 10, "Alpha"},
+					},
+				}, nil
+			}
+			// Direct callers of Beta
+			if strings.Contains(script, `callee_name = "Beta"`) {
+				return &QueryResult{
+					Headers: []string{"caller_file", "caller_name", "caller_line", "callee_name"},
+					Rows: [][]any{
+						{"pkg/c.go", "Gamma", 20, "Beta"},
+					},
+				}, nil
+			}
+			// Direct callers of Gamma — none
+			if strings.Contains(script, `callee_name = "Gamma"`) {
+				return &QueryResult{
+					Headers: []string{"caller_file", "caller_name", "caller_line", "callee_name"},
+					Rows:    [][]any{},
+				}, nil
+			}
+			return &QueryResult{Headers: []string{}, Rows: [][]any{}}, nil
+		},
+		nil,
+	)
+	ctx := setupTest(t)
+
+	// Without include_indirect — only direct caller Beta
+	result, err := FindCallers(ctx, client, FindCallersArgs{FunctionName: "Alpha"})
+	assertNoError(t, err)
+	assertContains(t, result.Text, "Beta")
+	assertNotContains(t, result.Text, "Gamma")
+
+	// With include_indirect — should also find Gamma
+	result, err = FindCallers(ctx, client, FindCallersArgs{FunctionName: "Alpha", IncludeIndirect: true})
+	assertNoError(t, err)
+	assertContains(t, result.Text, "Beta")
+	assertContains(t, result.Text, "Gamma")
+}
+
+// Test FindCallees with include_indirect=true (BFS expansion)
+func TestFindCallees_IncludeIndirect(t *testing.T) {
+	// Build a chain: Alpha -> Beta -> Gamma (Alpha is the caller)
+	// FindCallees("Alpha") should return Beta (direct), then with include_indirect=true also Gamma
+	client := NewMockClientCustom(
+		func(ctx context.Context, script string) (*QueryResult, error) {
+			// Direct callees of Alpha
+			if strings.Contains(script, `caller_name = "Alpha"`) {
+				return &QueryResult{
+					Headers: []string{"caller_name", "callee_file", "callee_name", "callee_line"},
+					Rows: [][]any{
+						{"Alpha", "pkg/b.go", "Beta", 10},
+					},
+				}, nil
+			}
+			// Direct callees of Beta
+			if strings.Contains(script, `caller_name = "Beta"`) {
+				return &QueryResult{
+					Headers: []string{"caller_name", "callee_file", "callee_name", "callee_line"},
+					Rows: [][]any{
+						{"Beta", "pkg/c.go", "Gamma", 20},
+					},
+				}, nil
+			}
+			// Direct callees of Gamma — none
+			if strings.Contains(script, `caller_name = "Gamma"`) {
+				return &QueryResult{
+					Headers: []string{"caller_name", "callee_file", "callee_name", "callee_line"},
+					Rows:    [][]any{},
+				}, nil
+			}
+			return &QueryResult{Headers: []string{}, Rows: [][]any{}}, nil
+		},
+		nil,
+	)
+	ctx := setupTest(t)
+
+	// Without include_indirect — only direct callee Beta
+	result, err := FindCallees(ctx, client, FindCalleesArgs{FunctionName: "Alpha"})
+	assertNoError(t, err)
+	assertContains(t, result.Text, "Beta")
+	assertNotContains(t, result.Text, "Gamma")
+
+	// With include_indirect — should also find Gamma
+	result, err = FindCallees(ctx, client, FindCalleesArgs{FunctionName: "Alpha", IncludeIndirect: true})
+	assertNoError(t, err)
+	assertContains(t, result.Text, "Beta")
+	assertContains(t, result.Text, "Gamma")
+}
+
+// Test BFS cycle detection — ensure cycles don't cause infinite loops
+func TestFindCallers_IndirectCycleDetection(t *testing.T) {
+	// Alpha -> Beta -> Alpha (cycle)
+	client := NewMockClientCustom(
+		func(ctx context.Context, script string) (*QueryResult, error) {
+			if strings.Contains(script, `callee_name = "Alpha"`) {
+				return &QueryResult{
+					Headers: []string{"caller_file", "caller_name", "caller_line", "callee_name"},
+					Rows: [][]any{
+						{"pkg/b.go", "Beta", 10, "Alpha"},
+					},
+				}, nil
+			}
+			if strings.Contains(script, `callee_name = "Beta"`) {
+				return &QueryResult{
+					Headers: []string{"caller_file", "caller_name", "caller_line", "callee_name"},
+					Rows: [][]any{
+						{"pkg/a.go", "Alpha", 5, "Beta"},
+					},
+				}, nil
+			}
+			return &QueryResult{Headers: []string{}, Rows: [][]any{}}, nil
+		},
+		nil,
+	)
+	ctx := setupTest(t)
+
+	// Should not hang — cycle detection via visited set
+	result, err := FindCallers(ctx, client, FindCallersArgs{FunctionName: "Alpha", IncludeIndirect: true})
+	assertNoError(t, err)
+	assertContains(t, result.Text, "Beta")
+}
+
+// Test that test file callers are excluded from FindCallers Phase 1
+func TestFindCallers_ExcludesTestFiles(t *testing.T) {
+	var capturedScript string
+	client := NewMockClientCustom(
+		func(ctx context.Context, script string) (*QueryResult, error) {
+			capturedScript = script
+			return &QueryResult{
+				Headers: []string{"caller_file", "caller_name", "caller_line", "callee_name"},
+				Rows:    [][]any{},
+			}, nil
+		},
+		nil,
+	)
+	ctx := setupTest(t)
+
+	_, err := FindCallers(ctx, client, FindCallersArgs{FunctionName: "Query"})
+	assertNoError(t, err)
+
+	// Verify the query includes the _test.go exclusion filter
+	assertContains(t, capturedScript, `_test[.]go`)
+}
+
+// Test that test file callees are excluded from FindCallees Phase 1
+func TestFindCallees_ExcludesTestFiles(t *testing.T) {
+	var phase1Script string
+	client := NewMockClientCustom(
+		func(ctx context.Context, script string) (*QueryResult, error) {
+			// Capture the first cie_calls query (Phase 1)
+			if strings.Contains(script, "cie_calls") && phase1Script == "" {
+				phase1Script = script
+			}
+			return &QueryResult{
+				Headers: []string{"caller_name", "callee_file", "callee_name", "callee_line"},
+				Rows:    [][]any{},
+			}, nil
+		},
+		nil,
+	)
+	ctx := setupTest(t)
+
+	_, err := FindCallees(ctx, client, FindCalleesArgs{FunctionName: "Query"})
+	assertNoError(t, err)
+
+	// Verify the Phase 1 query includes the _test.go exclusion filter
+	if phase1Script == "" {
+		t.Fatal("expected Phase 1 cie_calls query to be executed")
+	}
+	assertContains(t, phase1Script, `_test[.]go`)
+}

@@ -124,9 +124,9 @@ Follow this progression for most code exploration tasks:
 
 **cie_get_function_code** — Get full source code of a function. Always use full_code=true for long functions — without it, output may be truncated.
 
-**cie_find_callers** — Who calls this function? Set include_indirect=true for transitive callers (callers of callers).
+**cie_find_callers** — Who calls this function? Excludes test files. Set include_indirect=true for transitive callers (callers of callers, up to 3 levels deep).
 
-**cie_find_callees** — What does this function call? Shows all outgoing dependencies. Resolves method calls through both interface-typed and concrete-typed struct fields (e.g., b.db.Run() where db is *CozoDB). Also resolves calls through interface-typed function parameters.
+**cie_find_callees** — What does this function call? Excludes test files. Shows all outgoing dependencies. Resolves method calls through both interface-typed and concrete-typed struct fields (e.g., b.db.Run() where db is *CozoDB). Also resolves calls through interface-typed function parameters. Set include_indirect=true for transitive callees (callees of callees, up to 3 levels deep).
 
 **cie_get_call_graph** — Combined view: both callers and callees in one call.
 
@@ -595,7 +595,7 @@ func (s *mcpServer) getTools() []mcpTool {
 		},
 		{
 			Name:        "cie_find_callers",
-			Description: "Find all functions that call a specific function. Useful for understanding how a function is used throughout the codebase.",
+			Description: "Find all functions that call a specific function. Excludes test files. Useful for understanding how a function is used throughout the codebase.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -605,7 +605,7 @@ func (s *mcpServer) getTools() []mcpTool {
 					},
 					"include_indirect": map[string]any{
 						"type":        "boolean",
-						"description": "If true, include indirect callers (callers of callers). Default: false",
+						"description": "If true, include transitive callers (callers of callers, up to 3 levels deep). Default: false",
 						"default":     false,
 					},
 				},
@@ -614,13 +614,18 @@ func (s *mcpServer) getTools() []mcpTool {
 		},
 		{
 			Name:        "cie_find_callees",
-			Description: "Find all functions called by a specific function. Useful for understanding a function's dependencies.",
+			Description: "Find all functions called by a specific function. Excludes test files. Useful for understanding a function's dependencies and blast radius.",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"function_name": map[string]any{
 						"type":        "string",
 						"description": "Name of the function to find callees for",
+					},
+					"include_indirect": map[string]any{
+						"type":        "boolean",
+						"description": "If true, include transitive callees (callees of callees, up to 3 levels deep). Default: false",
+						"default":     false,
 					},
 				},
 				"required": []string{"function_name"},
@@ -1249,8 +1254,10 @@ func handleFindCallers(ctx context.Context, s *mcpServer, args map[string]any) (
 
 func handleFindCallees(ctx context.Context, s *mcpServer, args map[string]any) (*tools.ToolResult, error) {
 	funcName, _ := args["function_name"].(string)
+	includeIndirect, _ := args["include_indirect"].(bool)
 	return tools.FindCallees(ctx, s.client, tools.FindCalleesArgs{
-		FunctionName: funcName,
+		FunctionName:    funcName,
+		IncludeIndirect: includeIndirect,
 	})
 }
 

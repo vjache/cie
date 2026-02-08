@@ -205,6 +205,7 @@ func FindCallers(ctx context.Context, client Querier, args FindCallersArgs) (*To
   *cie_calls { caller_id, callee_id, call_line },
   *cie_function { id: callee_id, name: callee_name },
   *cie_function { id: caller_id, file_path: caller_file, name: caller_name, start_line: caller_line },
+  not regex_matches(caller_file, "_test[.]go$"),
   %s`, condition)
 
 	result, err := client.Query(ctx, script)
@@ -214,6 +215,7 @@ func FindCallers(ctx context.Context, client Querier, args FindCallersArgs) (*To
   *cie_calls { caller_id, callee_id },
   *cie_function { id: callee_id, name: callee_name },
   *cie_function { id: caller_id, file_path: caller_file, name: caller_name, start_line: caller_line },
+  not regex_matches(caller_file, "_test[.]go$"),
   %s`, condition)
 		result, err = client.Query(ctx, script)
 		if err != nil {
@@ -237,7 +239,8 @@ func FindCallers(ctx context.Context, client Querier, args FindCallersArgs) (*To
 				(field_type = interface_name or ends_with(field_type, concat(".", interface_name))),
 				caller_prefix = concat(caller_struct, "."),
 				*cie_function { name: caller_name, file_path: caller_file, start_line: caller_line },
-				starts_with(caller_name, caller_prefix)
+				starts_with(caller_name, caller_prefix),
+				not regex_matches(caller_file, "_test[.]go$")
 			:limit 50`,
 			args.FunctionName, structName)
 
@@ -247,17 +250,23 @@ func FindCallers(ctx context.Context, client Querier, args FindCallersArgs) (*To
 		}
 	}
 
+	// BFS expansion for transitive callers
+	if args.IncludeIndirect {
+		result = expandCallersIndirect(ctx, client, result)
+	}
+
 	return NewResult(FormatQueryResult(result, script)), nil
 }
 
 // FindCalleesArgs holds arguments for finding callees.
 type FindCalleesArgs struct {
-	FunctionName string
+	FunctionName    string
+	IncludeIndirect bool
 }
 
 // FindCallees finds all functions called by a specific function.
 // Includes both direct call edges and interface dispatch results.
-func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*ToolResult, error) {
+func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*ToolResult, error) { //nolint:gocognit // Multi-phase dispatch + BFS expansion
 	if args.FunctionName == "" {
 		return NewError("Error: 'function_name' is required"), nil
 	}
@@ -268,6 +277,7 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
   *cie_calls { caller_id, callee_id, call_line },
   *cie_function { id: caller_id, name: caller_name },
   *cie_function { id: callee_id, file_path: callee_file, name: callee_name, start_line: callee_line },
+  not regex_matches(callee_file, "_test[.]go$"),
   %s`, condition)
 
 	result, err := client.Query(ctx, script)
@@ -277,6 +287,7 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
   *cie_calls { caller_id, callee_id },
   *cie_function { id: caller_id, name: caller_name },
   *cie_function { id: callee_id, file_path: callee_file, name: callee_name, start_line: callee_line },
+  not regex_matches(callee_file, "_test[.]go$"),
   %s`, condition)
 		result, err = client.Query(ctx, script)
 		if err != nil {
@@ -335,7 +346,8 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
 				*cie_field { struct_name: %q, field_type },
 				field_prefix = concat(field_type, "."),
 				*cie_function { name: callee_name, file_path: callee_file, start_line: callee_line },
-				starts_with(callee_name, field_prefix)
+				starts_with(callee_name, field_prefix),
+				not regex_matches(callee_file, "_test[.]go$")
 			:limit 50`,
 			args.FunctionName, structName,
 		)
@@ -359,6 +371,11 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
 		if len(paramCallees.Rows) > 0 {
 			result = mergeQueryResults(result, paramCallees)
 		}
+	}
+
+	// BFS expansion for transitive callees
+	if args.IncludeIndirect {
+		result = expandCalleesIndirect(ctx, client, result)
 	}
 
 	return NewResult(FormatQueryResult(result, script)), nil
@@ -462,6 +479,131 @@ func ListFiles(ctx context.Context, client Querier, args ListFilesArgs) (*ToolRe
 	}
 
 	return NewResult(FormatQueryResult(result, script)), nil
+}
+
+const (
+	indirectMaxDepth   = 3   // Maximum BFS depth for transitive callers/callees
+	indirectMaxResults = 100 // Maximum total results for transitive expansion
+)
+
+// expandCallersIndirect performs BFS to find transitive callers (callers of callers).
+// Each round queries direct callers of the frontier set, merging new results.
+// Stops after indirectMaxDepth rounds, indirectMaxResults total, or no new results.
+func expandCallersIndirect(ctx context.Context, client Querier, result *QueryResult) *QueryResult {
+	// Collect known caller names as the visited set
+	visited := make(map[string]bool)
+	var frontier []string
+	for _, row := range result.Rows {
+		if len(row) > 1 {
+			name := AnyToString(row[1]) // caller_name is column 1
+			if !visited[name] {
+				visited[name] = true
+				frontier = append(frontier, name)
+			}
+		}
+	}
+
+	for depth := 0; depth < indirectMaxDepth && len(frontier) > 0 && len(result.Rows) < indirectMaxResults; depth++ {
+		var nextFrontier []string
+		for _, name := range frontier {
+			qr := queryDirectCallers(ctx, client, name)
+			if qr == nil || len(qr.Rows) == 0 {
+				continue
+			}
+			for _, row := range qr.Rows {
+				if len(row) > 1 {
+					callerName := AnyToString(row[1])
+					if !visited[callerName] {
+						visited[callerName] = true
+						nextFrontier = append(nextFrontier, callerName)
+					}
+				}
+			}
+			result = mergeQueryResults(result, qr)
+			if len(result.Rows) >= indirectMaxResults {
+				break
+			}
+		}
+		frontier = nextFrontier
+	}
+	return result
+}
+
+// expandCalleesIndirect performs BFS to find transitive callees (callees of callees).
+// Each round queries direct callees of the frontier set, merging new results.
+// Stops after indirectMaxDepth rounds, indirectMaxResults total, or no new results.
+func expandCalleesIndirect(ctx context.Context, client Querier, result *QueryResult) *QueryResult {
+	// Collect known callee names as the visited set
+	visited := make(map[string]bool)
+	var frontier []string
+	for _, row := range result.Rows {
+		if len(row) > 2 {
+			name := AnyToString(row[2]) // callee_name is column 2
+			if !visited[name] {
+				visited[name] = true
+				frontier = append(frontier, name)
+			}
+		}
+	}
+
+	for depth := 0; depth < indirectMaxDepth && len(frontier) > 0 && len(result.Rows) < indirectMaxResults; depth++ {
+		var nextFrontier []string
+		for _, name := range frontier {
+			qr := queryDirectCallees(ctx, client, name)
+			if qr == nil || len(qr.Rows) == 0 {
+				continue
+			}
+			for _, row := range qr.Rows {
+				if len(row) > 2 {
+					calleeName := AnyToString(row[2])
+					if !visited[calleeName] {
+						visited[calleeName] = true
+						nextFrontier = append(nextFrontier, calleeName)
+					}
+				}
+			}
+			result = mergeQueryResults(result, qr)
+			if len(result.Rows) >= indirectMaxResults {
+				break
+			}
+		}
+		frontier = nextFrontier
+	}
+	return result
+}
+
+// queryDirectCallers queries direct callers of a function (Phase 1 only, no dispatch).
+// Used by BFS expansion to avoid re-running the full multi-phase FindCallers.
+func queryDirectCallers(ctx context.Context, client Querier, funcName string) *QueryResult {
+	condition := fmt.Sprintf("(callee_name = %q or ends_with(callee_name, %q))", funcName, "."+funcName)
+	script := fmt.Sprintf(`?[caller_file, caller_name, caller_line, callee_name] :=
+  *cie_calls { caller_id, callee_id },
+  *cie_function { id: callee_id, name: callee_name },
+  *cie_function { id: caller_id, file_path: caller_file, name: caller_name, start_line: caller_line },
+  not regex_matches(caller_file, "_test[.]go$"),
+  %s`, condition)
+	result, err := client.Query(ctx, script)
+	if err != nil {
+		return nil
+	}
+	return result
+}
+
+// queryDirectCallees queries direct callees of a function (Phase 1 only, no dispatch).
+// Used by BFS expansion to avoid re-running the full multi-phase FindCallees.
+func queryDirectCallees(ctx context.Context, client Querier, funcName string) *QueryResult {
+	condition := fmt.Sprintf("(caller_name = %q or ends_with(caller_name, %q))", funcName, "."+funcName)
+	script := fmt.Sprintf(`?[caller_name, callee_file, callee_name, callee_line] :=
+  *cie_calls { caller_id, callee_id },
+  *cie_function { id: caller_id, name: caller_name },
+  *cie_function { id: callee_id, file_path: callee_file, name: callee_name, start_line: callee_line },
+  not regex_matches(callee_file, "_test[.]go$"),
+  %s`, condition)
+	result, err := client.Query(ctx, script)
+	if err != nil {
+		return nil
+	}
+	return result
 }
 
 // filterAlreadySeen removes rows from result where the callee_name (column 2)
