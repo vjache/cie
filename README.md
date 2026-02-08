@@ -2,6 +2,8 @@
   <h1>CIE - Code Intelligence Engine</h1>
   <p><strong>Give your AI assistant deep understanding of your codebase</strong></p>
 
+  <img src="docs/cie-demo.gif" alt="CIE Demo" width="800">
+
   [![Release](https://github.com/kraklabs/cie/actions/workflows/release.yml/badge.svg)](https://github.com/kraklabs/cie/actions/workflows/release.yml)
   [![codecov](https://codecov.io/gh/kraklabs/cie/branch/main/graph/badge.svg)](https://codecov.io/gh/kraklabs/cie)
   [![Go Report Card](https://goreportcard.com/badge/github.com/kraklabs/cie)](https://goreportcard.com/report/github.com/kraklabs/cie)
