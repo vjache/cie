@@ -284,7 +284,6 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
 	// Also query interface dispatch callees.
 	structName := extractStructName(args.FunctionName)
 	if structName != "" {
-
 		dispatchScript := fmt.Sprintf(
 			`?[caller_name, callee_file, callee_name, callee_line] :=
 				caller_name = %q,
