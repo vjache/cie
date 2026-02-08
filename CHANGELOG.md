@@ -5,6 +5,14 @@ All notable changes to CIE (Code Intelligence Engine) will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.13] - 2026-02-08
+
+### Added
+- **Inline type definitions in `cie_trace_path`** — New `include_types=true` parameter embeds interface and struct definitions inline at each hop where they appear. Shows the interface when `[via interface X]` is annotated, and the receiver struct for methods. Each unique type is shown only once (at first appearance). Use `type_lines` to control truncation (default: 15 lines). Eliminates 2-3 round-trips to `cie_find_type` per trace.
+
+### Changed
+- MCP server version bumped to 1.16.0.
+
 ## [0.7.12] - 2026-02-07
 
 ### Added
@@ -332,6 +340,7 @@ Initial open source release of CIE (Code Intelligence Engine).
 - All API keys via environment variables only
 
 [unreleased]: https://github.com/kraklabs/cie/compare/v0.7.11...HEAD
+[0.7.13]: https://github.com/kraklabs/cie/compare/v0.7.12...v0.7.13
 [0.7.12]: https://github.com/kraklabs/cie/compare/v0.7.11...v0.7.12
 [0.7.11]: https://github.com/kraklabs/cie/compare/v0.7.10...v0.7.11
 [0.7.10]: https://github.com/kraklabs/cie/compare/v0.7.9...v0.7.10
