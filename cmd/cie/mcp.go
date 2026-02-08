@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	mcpVersion    = "1.15.0" // trace_path: inline code + interface annotations
+	mcpVersion    = "1.16.0" // trace_path: inline type definitions
 	mcpServerName = "cie"
 )
 
@@ -130,7 +130,7 @@ Follow this progression for most code exploration tasks:
 
 **cie_get_call_graph** — Combined view: both callers and callees in one call.
 
-**cie_trace_path** — Trace execution path from entry point to target function. Auto-detects entry points (main for Go, index exports for JS/TS, __main__ for Python). Use source parameter to trace between arbitrary functions. Increase max_depth for deeply nested targets. Resolves calls through concrete struct fields and interface parameters with fan-out reduction. Shows callsite line numbers (e.g., [called at store.go:63]) so you know exactly where in the caller each call happens. Annotates interface dispatch edges with [via interface X]. Use include_code=true to embed function source inline (eliminates separate cie_get_function_code calls).
+**cie_trace_path** — Trace execution path from entry point to target function. Auto-detects entry points (main for Go, index exports for JS/TS, __main__ for Python). Use source parameter to trace between arbitrary functions. Increase max_depth for deeply nested targets. Resolves calls through concrete struct fields and interface parameters with fan-out reduction. Shows callsite line numbers (e.g., [called at store.go:63]) so you know exactly where in the caller each call happens. Annotates interface dispatch edges with [via interface X]. Use include_code=true to embed function source inline (eliminates separate cie_get_function_code calls). Use include_types=true to embed interface/struct definitions inline at hops where they appear (eliminates separate cie_find_type calls).
 
 ### Type & Interface Tools
 
@@ -1046,7 +1046,7 @@ func (s *mcpServer) getTools() []mcpTool {
 		},
 		{
 			Name:        "cie_trace_path",
-			Description: "Trace call paths from source function(s) to a target function. Uses the call graph to find how execution reaches a specific function. Returns the shortest paths with full call chain and file locations. Annotates interface dispatch boundaries with [via interface X]. If no source is specified, auto-detects entry points based on language conventions (main for Go/Rust, index/app exports for JS/TS, __main__ for Python). Use include_code=true to embed function source inline (eliminates round-trips to cie_get_function_code).",
+			Description: "Trace call paths from source function(s) to a target function. Uses the call graph to find how execution reaches a specific function. Returns the shortest paths with full call chain and file locations. Annotates interface dispatch boundaries with [via interface X]. If no source is specified, auto-detects entry points based on language conventions (main for Go/Rust, index/app exports for JS/TS, __main__ for Python). Use include_code=true to embed function source inline (eliminates round-trips to cie_get_function_code). Use include_types=true to embed interface/struct definitions inline at hops where they appear (eliminates round-trips to cie_find_type).",
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1086,6 +1086,16 @@ func (s *mcpServer) getTools() []mcpTool {
 						"type":        "integer",
 						"description": "Maximum lines of code to show per function when include_code=true (default: 10). Increase for more context.",
 						"default":     10,
+					},
+					"include_types": map[string]any{
+						"type":        "boolean",
+						"description": "If true, embed interface and struct definitions inline at each hop where they appear. Shows the interface when [via interface X] is annotated, and the receiver struct for methods. Eliminates round-trips to cie_find_type.",
+						"default":     false,
+					},
+					"type_lines": map[string]any{
+						"type":        "integer",
+						"description": "Maximum lines per type definition when include_types=true (default: 15).",
+						"default":     15,
 					},
 				},
 				"required": []string{"target"},
@@ -1483,15 +1493,19 @@ func handleTracePath(ctx context.Context, s *mcpServer, args map[string]any) (*t
 	waypoints := extractStringArray(args, "waypoints")
 	includeCode, _ := args["include_code"].(bool)
 	codeLines, _ := getIntArg(args, "code_lines", 10)
+	includeTypes, _ := args["include_types"].(bool)
+	typeLines, _ := getIntArg(args, "type_lines", 15)
 	return tools.TracePath(ctx, s.client, tools.TracePathArgs{
-		Target:      target,
-		Source:      source,
-		PathPattern: pathPattern,
-		MaxPaths:    maxPaths,
-		MaxDepth:    maxDepth,
-		Waypoints:   waypoints,
-		IncludeCode: includeCode,
-		CodeLines:   codeLines,
+		Target:       target,
+		Source:       source,
+		PathPattern:  pathPattern,
+		MaxPaths:     maxPaths,
+		MaxDepth:     maxDepth,
+		Waypoints:    waypoints,
+		IncludeCode:  includeCode,
+		CodeLines:    codeLines,
+		IncludeTypes: includeTypes,
+		TypeLines:    typeLines,
 	})
 }
 
