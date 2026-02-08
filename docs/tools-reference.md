@@ -1016,7 +1016,7 @@ The application has 2 primary entry points: the main CLI and the HTTP server.
 
 ### cie_trace_path
 
-Trace call paths from source function(s) to a target function. Shows execution flow. If no source specified, auto-detects entry points based on language conventions.
+Trace call paths from source function(s) to a target function. Shows execution flow with interface dispatch annotations and optional inline code. If no source specified, auto-detects entry points based on language conventions.
 
 **Parameters:**
 
@@ -1028,6 +1028,8 @@ Trace call paths from source function(s) to a target function. Shows execution f
 | `max_paths` | int | No | 3 | Maximum number of paths to return |
 | `max_depth` | int | No | 10 | Maximum call depth to search |
 | `waypoints` | []string | No | — | Intermediate functions the path must pass through, in order (chains BFS segments) |
+| `include_code` | bool | No | false | Embed function source code inline for each hop (eliminates separate cie_get_function_code calls) |
+| `code_lines` | int | No | 10 | Maximum lines of code per function when include_code=true |
 
 **Example:**
 
@@ -1049,6 +1051,17 @@ Trace call paths from source function(s) to a target function. Shows execution f
 }
 ```
 
+**With inline code (eliminates round-trips):**
+
+```json
+{
+  "target": "StoreFact",
+  "source": "main",
+  "include_code": true,
+  "code_lines": 15
+}
+```
+
 **With waypoints (chain through intermediate functions):**
 
 ```json
@@ -1059,32 +1072,46 @@ Trace call paths from source function(s) to a target function. Shows execution f
 }
 ```
 
-**Output:**
+**Output (default):**
 
 ```markdown
 ## Call Paths to RegisterRoutes
 
 Found 2 paths from entry points:
 
-### Path 1 (depth: 4)
-1. **main** (cmd/gateway/main.go:23)
-   ↓ calls at line 45
-2. **NewServer** (internal/server/server.go:67)
-   ↓ calls at line 89
-3. **BuildRouter** (internal/http/router.go:34)
-   ↓ calls at line 56
-4. **RegisterRoutes** (internal/http/routes.go:23) OK TARGET
+### Path 1 (depth: 3)
 
-### Path 2 (depth: 5)
-1. **main** (cmd/gateway/main.go:23)
-   ↓ calls at line 48
-2. **InitApp** (internal/app/app.go:34)
-   ↓ calls at line 67
-3. **SetupHTTP** (internal/app/http.go:23)
-   ↓ calls at line 45
-4. **BuildRouter** (internal/http/router.go:34)
-   ↓ calls at line 56
-5. **RegisterRoutes** (internal/http/routes.go:23) OK TARGET
+main
+   main.go:23
+  → NewServer
+     server.go:67  [called at main.go:45]
+  → Client.StoreFact  [via interface Querier]
+     client.go:89  [called at server.go:59]
+```
+
+**Output (with include_code=true):**
+
+```markdown
+### Path 1 (depth: 2)
+
+**main**
+   main.go:23
+   ```go
+   func main() {
+       server := NewServer()
+       server.Run()
+   }
+   ```
+  → **Client.StoreFact  [via interface Querier]**
+     client.go:89  [called at main.go:45]
+     ```go
+     func (c *Client) StoreFact(ctx context.Context, fact *Fact) error {
+         resp, err := c.http.Post(c.baseURL+"/facts", fact)
+         if err != nil {
+             return fmt.Errorf("store fact: %w", err)
+         }
+     ...
+     ```
 ```
 
 **Tips:**
@@ -1095,6 +1122,8 @@ Found 2 paths from entry points:
 - 📊 **Increase `max_paths` for complex flows** - Default 3 may miss alternate paths
 - 🧹 **Use `path_pattern` to focus** - Narrows search to specific module
 -  **BFS search** - Returns shortest paths first
+-  **Use `include_code=true`** to see function implementations inline — saves 5+ round-trips on a typical trace
+-  **Interface annotations** - `[via interface X]` marks where dispatch crosses an interface boundary
 
 **Common Mistakes:**
 
@@ -1102,6 +1131,7 @@ Found 2 paths from entry points:
 - No Not using `path_pattern` on large codebases (can be slow without filtering)
 - No Expecting all possible paths (set `max_paths` higher if needed)
 - Yes Start with defaults, adjust `max_paths` and `max_depth` if needed
+- Yes Use `include_code=true` when you need to understand implementation details along the path
 
 ---
 
