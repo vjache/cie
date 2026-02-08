@@ -1030,6 +1030,8 @@ Trace call paths from source function(s) to a target function. Shows execution f
 | `waypoints` | []string | No | — | Intermediate functions the path must pass through, in order (chains BFS segments) |
 | `include_code` | bool | No | false | Embed function source code inline for each hop (eliminates separate cie_get_function_code calls) |
 | `code_lines` | int | No | 10 | Maximum lines of code per function when include_code=true |
+| `include_types` | bool | No | false | Embed interface/struct definitions inline at hops where they appear (eliminates separate cie_find_type calls) |
+| `type_lines` | int | No | 15 | Maximum lines per type definition when include_types=true |
 
 **Example:**
 
@@ -1059,6 +1061,29 @@ Trace call paths from source function(s) to a target function. Shows execution f
   "source": "main",
   "include_code": true,
   "code_lines": 15
+}
+```
+
+**With inline type definitions (eliminates cie_find_type round-trips):**
+
+```json
+{
+  "target": "EmbeddedBackend.Query",
+  "source": "FindCallees",
+  "include_types": true
+}
+```
+
+**With both types and code:**
+
+```json
+{
+  "target": "EmbeddedBackend.Query",
+  "source": "handleFindCallers",
+  "include_types": true,
+  "include_code": true,
+  "code_lines": 5,
+  "type_lines": 10
 }
 ```
 
@@ -1114,6 +1139,30 @@ main
      ```
 ```
 
+**Output (with include_types=true):**
+
+```markdown
+### Path 1 (depth: 2)
+
+**main**
+   main.go:23
+  → **EmbeddedQuerier.Query  [via interface Querier]**
+     client_embedded.go:42  [called at search.go:264]
+     _interface **Querier** (client.go:10):_
+     ```go
+     type Querier interface {
+         Query(ctx context.Context, script string) (*QueryResult, error)
+         QueryRaw(ctx context.Context, script string) (*QueryResult, error)
+     }
+     ```
+     _struct **EmbeddedQuerier** (client_embedded.go:30):_
+     ```go
+     type EmbeddedQuerier struct {
+         backend *EmbeddedBackend
+     }
+     ```
+```
+
 **Tips:**
 
 -  **Auto-detect entry points** - Leave `source` empty to trace from main/entry points
@@ -1124,6 +1173,7 @@ main
 -  **BFS search** - Returns shortest paths first
 -  **Use `include_code=true`** to see function implementations inline — saves 5+ round-trips on a typical trace
 -  **Interface annotations** - `[via interface X]` marks where dispatch crosses an interface boundary
+-  **Use `include_types=true`** to see interface/struct definitions inline — saves 2-3 round-trips per trace when you need to understand type shapes
 
 **Common Mistakes:**
 
