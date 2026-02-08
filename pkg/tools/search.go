@@ -201,8 +201,8 @@ func FindCallers(ctx context.Context, client Querier, args FindCallersArgs) (*To
 
 	condition := fmt.Sprintf("(callee_name = %q or ends_with(callee_name, %q))", args.FunctionName, "."+args.FunctionName)
 
-	script := fmt.Sprintf(`?[caller_file, caller_name, caller_line, callee_name] :=
-  *cie_calls { caller_id, callee_id },
+	script := fmt.Sprintf(`?[caller_file, caller_name, caller_line, callee_name, call_line] :=
+  *cie_calls { caller_id, callee_id, call_line },
   *cie_function { id: callee_id, name: callee_name },
   *cie_function { id: caller_id, file_path: caller_file, name: caller_name, start_line: caller_line },
   %s`, condition)
@@ -255,8 +255,8 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
 
 	condition := fmt.Sprintf("(caller_name = %q or ends_with(caller_name, %q))", args.FunctionName, "."+args.FunctionName)
 
-	script := fmt.Sprintf(`?[caller_name, callee_file, callee_name, callee_line] :=
-  *cie_calls { caller_id, callee_id },
+	script := fmt.Sprintf(`?[caller_name, callee_file, callee_name, callee_line, call_line] :=
+  *cie_calls { caller_id, callee_id, call_line },
   *cie_function { id: caller_id, name: caller_name },
   *cie_function { id: callee_id, file_path: callee_file, name: callee_name, start_line: callee_line },
   %s`, condition)
@@ -266,11 +266,24 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
 		return NewError(fmt.Sprintf("Query error: %v\n\nGenerated query:\n%s", err, script)), nil
 	}
 
+	// Extract called method names from source code to filter dispatch results.
+	// Computed before struct check so standalone functions also get filtered.
+	calledMethods := extractCalledMethodsFromCode(ctx, client, args.FunctionName)
+
+	// Build a set of callees already found via direct cie_calls (Phase 1).
+	// Dispatch phases (2/2b/3) skip callees already present to avoid duplicates.
+	// This is needed because Phase 1 rows have call_line (5 cols) while dispatch
+	// rows don't (4 cols), so rowKey-based dedup in mergeQueryResults can't match them.
+	seenCallees := make(map[string]bool)
+	for _, row := range result.Rows {
+		if len(row) > 2 {
+			seenCallees[AnyToString(row[2])] = true // callee_name is column 2
+		}
+	}
+
 	// Also query interface dispatch callees.
-	// Extract called method names from source code to filter and reduce fan-out.
 	structName := extractStructName(args.FunctionName)
 	if structName != "" {
-		calledMethods := extractCalledMethodsFromCode(ctx, client, args.FunctionName)
 
 		dispatchScript := fmt.Sprintf(
 			`?[caller_name, callee_file, callee_name, callee_line] :=
@@ -292,6 +305,7 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
 			if calledMethods != nil {
 				dispatchResult = filterResultsByCalledMethods(dispatchResult, calledMethods)
 			}
+			dispatchResult = filterAlreadySeen(dispatchResult, seenCallees)
 			if len(dispatchResult.Rows) > 0 {
 				result = mergeQueryResults(result, dispatchResult)
 			}
@@ -313,6 +327,7 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
 			if calledMethods != nil {
 				concreteResult = filterResultsByCalledMethods(concreteResult, calledMethods)
 			}
+			concreteResult = filterAlreadySeen(concreteResult, seenCallees)
 			if len(concreteResult.Rows) > 0 {
 				result = mergeQueryResults(result, concreteResult)
 			}
@@ -321,9 +336,12 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
 
 	// Parameter-based interface dispatch — always run, methods can have both
 	// field-based callees and parameter-based interface calls.
-	paramCallees := findCalleesViaParams(ctx, client, args.FunctionName)
+	paramCallees := findCalleesViaParams(ctx, client, args.FunctionName, calledMethods)
 	if paramCallees != nil && len(paramCallees.Rows) > 0 {
-		result = mergeQueryResults(result, paramCallees)
+		paramCallees = filterAlreadySeen(paramCallees, seenCallees)
+		if len(paramCallees.Rows) > 0 {
+			result = mergeQueryResults(result, paramCallees)
+		}
 	}
 
 	return NewResult(FormatQueryResult(result, script)), nil
@@ -331,7 +349,8 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
 
 // findCalleesViaParams resolves interface dispatch through function parameter types.
 // Queries the function's signature, parses params, and finds implementations.
-func findCalleesViaParams(ctx context.Context, client Querier, funcName string) *QueryResult {
+// calledMethods (from source code analysis) filters results to only methods actually called.
+func findCalleesViaParams(ctx context.Context, client Querier, funcName string, calledMethods map[string]bool) *QueryResult {
 	sigScript := fmt.Sprintf(
 		`?[signature] := *cie_function { name, signature }, (name = %q or ends_with(name, %q)) :limit 1`,
 		funcName, "."+funcName,
@@ -373,6 +392,14 @@ func findCalleesViaParams(ctx context.Context, client Querier, funcName string) 
 		implResult, err := client.Query(ctx, implScript)
 		if err != nil || len(implResult.Rows) == 0 {
 			continue
+		}
+
+		// Fan-out reduction: only include methods actually called in source code.
+		if calledMethods != nil {
+			implResult = filterResultsByCalledMethods(implResult, calledMethods)
+			if len(implResult.Rows) == 0 {
+				continue
+			}
 		}
 
 		if combined == nil {
@@ -418,6 +445,22 @@ func ListFiles(ctx context.Context, client Querier, args ListFilesArgs) (*ToolRe
 	}
 
 	return NewResult(FormatQueryResult(result, script)), nil
+}
+
+// filterAlreadySeen removes rows from result where the callee_name (column 2)
+// is already present in seenCallees. Used to deduplicate dispatch results against
+// Phase 1 direct call edges, which may have a different column count (call_line).
+func filterAlreadySeen(result *QueryResult, seenCallees map[string]bool) *QueryResult {
+	var filtered [][]any
+	for _, row := range result.Rows {
+		if len(row) > 2 {
+			calleeName := AnyToString(row[2])
+			if !seenCallees[calleeName] {
+				filtered = append(filtered, row)
+			}
+		}
+	}
+	return &QueryResult{Headers: result.Headers, Rows: filtered}
 }
 
 // mergeQueryResults appends rows from src into dst, deduplicating by composite key of all columns.

@@ -119,6 +119,7 @@ Function call relationships.
 |-----------|--------|-------------|
 | caller_id | string | ID of calling function |
 | callee_id | string | ID of called function |
+| call_line | int    | Line number where the call occurs in the caller (0 = unknown) |
 
 ### cie_import
 Import statements.

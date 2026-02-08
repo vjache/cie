@@ -202,6 +202,7 @@ func (r *CallResolver) resolveCallsSequential(unresolvedCalls []UnresolvedCall) 
 				resolved = append(resolved, CallsEdge{
 					CallerID: call.CallerID,
 					CalleeID: calleeID,
+					CallLine: call.Line,
 				})
 			}
 		} else {
@@ -211,6 +212,7 @@ func (r *CallResolver) resolveCallsSequential(unresolvedCalls []UnresolvedCall) 
 				edgeKey := edge.CallerID + "->" + edge.CalleeID
 				if !seen[edgeKey] {
 					seen[edgeKey] = true
+					edge.CallLine = call.Line
 					resolved = append(resolved, edge)
 				}
 			}
@@ -235,6 +237,7 @@ func (r *CallResolver) resolveCallsParallel(unresolvedCalls []UnresolvedCall) []
 	type resolveResult struct {
 		callerID string
 		calleeID string
+		callLine int
 	}
 	results := make(chan resolveResult, len(unresolvedCalls))
 
@@ -251,6 +254,7 @@ func (r *CallResolver) resolveCallsParallel(unresolvedCalls []UnresolvedCall) []
 					results <- resolveResult{
 						callerID: call.CallerID,
 						calleeID: calleeID,
+						callLine: call.Line,
 					}
 				} else {
 					// Fallback: try interface dispatch resolution
@@ -259,6 +263,7 @@ func (r *CallResolver) resolveCallsParallel(unresolvedCalls []UnresolvedCall) []
 						results <- resolveResult{
 							callerID: edge.CallerID,
 							calleeID: edge.CalleeID,
+							callLine: call.Line,
 						}
 					}
 				}
@@ -288,6 +293,7 @@ func (r *CallResolver) resolveCallsParallel(unresolvedCalls []UnresolvedCall) []
 			resolved = append(resolved, CallsEdge{
 				CallerID: result.callerID,
 				CalleeID: result.calleeID,
+				CallLine: result.callLine,
 			})
 		}
 	}

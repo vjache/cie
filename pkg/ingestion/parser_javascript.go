@@ -344,6 +344,7 @@ func (p *TreeSitterParser) walkJSCallExpressions(node *sitter.Node, content []by
 					*calls = append(*calls, CallsEdge{
 						CallerID: callerID,
 						CalleeID: calleeID,
+						CallLine: int(node.StartPoint().Row) + 1,
 					})
 				}
 			}

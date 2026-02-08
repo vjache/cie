@@ -246,6 +246,7 @@ func (p *TreeSitterParser) walkPythonCallExpressions(node *sitter.Node, content 
 					*calls = append(*calls, CallsEdge{
 						CallerID: callerID,
 						CalleeID: calleeID,
+						CallLine: int(node.StartPoint().Row) + 1,
 					})
 				}
 			}

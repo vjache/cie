@@ -107,6 +107,7 @@ type DefinesTypeEdge struct {
 type CallsEdge struct {
 	CallerID string // Reference to FunctionEntity.ID (caller)
 	CalleeID string // Reference to FunctionEntity.ID (callee)
+	CallLine int    // Line number where the call occurs in the caller (0 = unknown)
 }
 
 // ImportEntity represents an import statement in a source file.
@@ -225,6 +226,7 @@ func DatalogSchema() string {
 :create cie_calls {
 	caller_id: String,
 	callee_id: String =>
+	call_line: Int default 0,
 }
 
 // Import entities: represents import statements in source files

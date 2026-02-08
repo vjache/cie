@@ -181,7 +181,7 @@ func (b *EmbeddedBackend) EnsureSchema() error {
 		`:create cie_function_code { function_id: String => code_text: String }`,
 		fmt.Sprintf(`:create cie_function_embedding { function_id: String => embedding: <F32; %d> }`, dim),
 		`:create cie_defines { id: String => file_id: String, function_id: String }`,
-		`:create cie_calls { id: String => caller_id: String, callee_id: String }`,
+		`:create cie_calls { id: String => caller_id: String, callee_id: String, call_line: Int default 0 }`,
 		`:create cie_import { id: String => file_path: String, import_path: String, alias: String, start_line: Int }`,
 		`:create cie_type { id: String => name: String, kind: String, file_path: String, start_line: Int, end_line: Int, start_col: Int, end_col: Int }`,
 		`:create cie_type_code { type_id: String => code_text: String }`,

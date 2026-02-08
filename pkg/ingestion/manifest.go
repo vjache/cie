@@ -77,6 +77,7 @@ type FunctionManifestEntry struct {
 type CallEdgeManifestEntry struct {
 	CallerID string `json:"caller_id"`
 	CalleeID string `json:"callee_id"`
+	CallLine int    `json:"call_line,omitempty"`
 }
 
 // FileManifestEntry tracks a single file's state for diffing.

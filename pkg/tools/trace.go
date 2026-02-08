@@ -33,6 +33,7 @@ type TraceFuncInfo struct {
 	Name     string
 	FilePath string
 	Line     string
+	CallLine string // Line in the caller where this function is called (empty = unknown)
 }
 
 // TracePathArgs holds arguments for tracing call paths
@@ -183,7 +184,12 @@ func traceWithWaypoints(ctx context.Context, client Querier, args TracePathArgs)
 			arrow = "→ "
 		}
 		fmt.Fprintf(&sb, "%s%s%s\n", indent, arrow, fn.Name)
-		fmt.Fprintf(&sb, "%s   %s:%s\n", indent, ExtractFileName(fn.FilePath), fn.Line)
+		locInfo := fmt.Sprintf("%s:%s", ExtractFileName(fn.FilePath), fn.Line)
+		if fn.CallLine != "" && i > 0 {
+			prevFile := ExtractFileName(fullPath[i-1].FilePath)
+			locInfo += fmt.Sprintf("  [called at %s:%s]", prevFile, fn.CallLine)
+		}
+		fmt.Fprintf(&sb, "%s   %s\n", indent, locInfo)
 	}
 	sb.WriteString("```\n")
 
@@ -396,7 +402,13 @@ func formatTraceOutput(sources []TraceFuncInfo, args TracePathArgs, result trace
 				arrow = "→ "
 			}
 			fmt.Fprintf(&sb, "%s%s%s\n", indent, arrow, fn.Name)
-			fmt.Fprintf(&sb, "%s   %s:%s\n", indent, ExtractFileName(fn.FilePath), fn.Line)
+			locInfo := fmt.Sprintf("%s:%s", ExtractFileName(fn.FilePath), fn.Line)
+			if fn.CallLine != "" {
+				// Show where in the previous function this call happens
+				prevFile := ExtractFileName(path[j-1].FilePath)
+				locInfo += fmt.Sprintf("  [called at %s:%s]", prevFile, fn.CallLine)
+			}
+			fmt.Fprintf(&sb, "%s   %s\n", indent, locInfo)
 		}
 		sb.WriteString("```\n\n")
 	}
@@ -501,10 +513,10 @@ func findFunctionsByName(ctx context.Context, client Querier, name, pathPattern 
 // Includes both direct call edges (cie_calls) and interface dispatch
 // (cie_field + cie_implements → concrete method implementations).
 func getCallees(ctx context.Context, client Querier, funcName string) []TraceFuncInfo {
-	// 1. Direct callees via cie_calls
+	// 1. Direct callees via cie_calls (includes call_line for callsite info)
 	script := fmt.Sprintf(
-		`?[callee_name, callee_file, callee_line] :=
-			*cie_calls { caller_id, callee_id },
+		`?[callee_name, callee_file, callee_line, call_line] :=
+			*cie_calls { caller_id, callee_id, call_line },
 			*cie_function { id: caller_id, name: caller_name },
 			*cie_function { id: callee_id, file_path: callee_file, name: callee_name, start_line: callee_line },
 			(caller_name = %q or ends_with(caller_name, %q))
@@ -522,32 +534,36 @@ func getCallees(ctx context.Context, client Querier, funcName string) []TraceFun
 	for _, row := range result.Rows {
 		name := AnyToString(row[0])
 		seen[name] = true
+		callLine := ""
+		if len(row) > 3 {
+			cl := AnyToString(row[3])
+			if cl != "" && cl != "0" {
+				callLine = cl
+			}
+		}
 		ret = append(ret, TraceFuncInfo{
 			Name:     name,
 			FilePath: AnyToString(row[1]),
 			Line:     AnyToString(row[2]),
+			CallLine: callLine,
 		})
 	}
+
+	// Extract called method names from source code — shared by Phase 2/2b/3
+	// to filter results to only methods actually invoked in the function body.
+	calledMethods := extractCalledMethodsFromCode(ctx, client, funcName)
 
 	// 2 & 2b. Field-based dispatch (interface + concrete)
 	structName := extractStructName(funcName)
 	if structName != "" {
-		fieldCallees := getCalleesViaFields(ctx, client, funcName, structName, seen)
+		fieldCallees := getCalleesViaFields(ctx, client, funcName, structName, seen, calledMethods)
 		ret = append(ret, fieldCallees...)
 	}
 
 	// 3. Parameter-based interface dispatch
 	// Always run: a method can have BOTH field-based callees (Phase 2) AND
 	// parameter-based interface calls.
-	directCalleeNames := make(map[string]bool)
-	for _, c := range ret {
-		if methodName := extractMethodName(c.Name); methodName != "" {
-			directCalleeNames[methodName] = true
-		} else if c.Name != "" {
-			directCalleeNames[c.Name] = true
-		}
-	}
-	paramCallees := getCalleesViaParams(ctx, client, funcName, seen, directCalleeNames)
+	paramCallees := getCalleesViaParams(ctx, client, funcName, seen, calledMethods)
 	ret = append(ret, paramCallees...)
 
 	return ret
@@ -557,8 +573,7 @@ func getCallees(ctx context.Context, client Querier, funcName string) []TraceFun
 // Phase 2: interface-typed fields → concrete implementations.
 // Phase 2b: concrete-typed fields → direct method lookup.
 // Uses source code analysis to filter results to only actually called methods.
-func getCalleesViaFields(ctx context.Context, client Querier, funcName, structName string, seen map[string]bool) []TraceFuncInfo {
-	calledMethods := extractCalledMethodsFromCode(ctx, client, funcName)
+func getCalleesViaFields(ctx context.Context, client Querier, funcName, structName string, seen map[string]bool, calledMethods map[string]bool) []TraceFuncInfo {
 	var ret []TraceFuncInfo
 
 	// Phase 2: Interface field dispatch
@@ -624,8 +639,8 @@ func appendFilteredCallees(ret []TraceFuncInfo, result *QueryResult, seen map[st
 // getCalleesViaParams resolves interface dispatch through function parameters.
 // Queries the function's signature, parses parameter types, and for each interface-typed
 // parameter, finds concrete implementations and their methods.
-// directCalleeNames filters results to only methods actually called (reduces fan-out).
-func getCalleesViaParams(ctx context.Context, client Querier, funcName string, seen map[string]bool, directCalleeNames map[string]bool) []TraceFuncInfo {
+// calledMethods (from source code analysis) filters results to only methods actually called.
+func getCalleesViaParams(ctx context.Context, client Querier, funcName string, seen map[string]bool, calledMethods map[string]bool) []TraceFuncInfo {
 	// Query the function's signature
 	sigScript := fmt.Sprintf(
 		`?[signature] := *cie_function { name, signature }, (name = %q or ends_with(name, %q)) :limit 1`,
@@ -673,11 +688,10 @@ func getCalleesViaParams(ctx context.Context, client Querier, funcName string, s
 
 		for _, row := range implResult.Rows {
 			name := AnyToString(row[0])
-			// Fan-out reduction: if we know which methods were actually called
-			// (from Phase 1 direct callees), only include matching methods.
-			if len(directCalleeNames) > 0 {
+			// Fan-out reduction: only include methods actually called in source code.
+			if calledMethods != nil {
 				methodName := extractMethodName(name)
-				if methodName != "" && !directCalleeNames[methodName] {
+				if methodName != "" && !calledMethods[methodName] {
 					continue
 				}
 			}

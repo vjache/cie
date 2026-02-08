@@ -36,7 +36,7 @@ import (
 //   - cie_type_code: type_id, code_text
 //   - cie_type_embedding: type_id, embedding
 //   - cie_defines: file_id, function_id
-//   - cie_calls: caller_id, callee_id
+//   - cie_calls: caller_id, callee_id, call_line
 type DatalogBuilder struct {
 }
 
@@ -314,13 +314,14 @@ func (db *DatalogBuilder) BuildMutationsWithTypes(
 	// Calls edges (store as entity with stable id)
 	for _, edge := range calls {
 		edgeID := quoteString("call:" + edge.CallerID + "|" + edge.CalleeID)
-		buf.WriteString("{ ?[id, caller_id, callee_id] <- [[")
+		buf.WriteString("{ ?[id, caller_id, callee_id, call_line] <- [[")
 		buf.WriteString(strings.Join([]string{
 			edgeID,
 			quoteString(edge.CallerID),
 			quoteString(edge.CalleeID),
+			fmt.Sprintf("%d", edge.CallLine),
 		}, ", "))
-		buf.WriteString("]] :put cie_calls { id, caller_id, callee_id } }\n")
+		buf.WriteString("]] :put cie_calls { id, caller_id, callee_id, call_line } }\n")
 	}
 
 	// Import entities (optional, for cross-package resolution)

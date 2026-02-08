@@ -732,7 +732,8 @@ func (p *TreeSitterParser) processGoCallExpression(
 			edgeKey := callerID + "->" + calleeID
 			if !seenLocal[edgeKey] {
 				seenLocal[edgeKey] = true
-				*localCalls = append(*localCalls, CallsEdge{CallerID: callerID, CalleeID: calleeID})
+				callLine := int(node.StartPoint().Row) + 1
+				*localCalls = append(*localCalls, CallsEdge{CallerID: callerID, CalleeID: calleeID, CallLine: callLine})
 			}
 		} else if fullName != "" && fullName != simpleName {
 			// Self-name match but different full name: e.g., Query() calling
