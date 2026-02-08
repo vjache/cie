@@ -5,6 +5,19 @@ All notable changes to CIE (Code Intelligence Engine) will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.9] - 2026-02-07
+
+### Added
+- **Callsite line numbers** — `cie_trace_path`, `cie_find_callers`, and `cie_find_callees` now show where each call occurs in the caller function (e.g., `[called at search.go:163]`). The `cie_calls` schema gains a `call_line` column populated by all three parsers (Go, Python, JS/TS). Requires re-indexing to populate callsite data.
+- **`include_code` parameter for `cie_find_type`** — When `include_code=true`, the tool JOINs with `cie_type_code` and returns the full source code of the type (interface methods, struct fields). Eliminates the need for a follow-up file read.
+
+### Fixed
+- **Duplicate results in `cie_find_callees`** — Phase 1 (direct call edges) and dispatch phases (2/2b/3) could return the same callee, causing duplicates. Added `filterAlreadySeen` semantic dedup by callee name across phases.
+- **Param dispatch fan-out in `cie_find_callees`** — `FindCallees` now applies the same source-code-based method filter as `cie_trace_path`, reducing noise from unrelated interface methods.
+
+### Changed
+- MCP server version bumped to 1.13.0.
+
 ## [0.7.8] - 2026-02-07
 
 ### Fixed

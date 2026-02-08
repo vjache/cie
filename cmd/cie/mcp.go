@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	mcpVersion    = "1.12.0" // Fix parser self-name-match, BFS multi-path, field dispatch fan-out reduction
+	mcpVersion    = "1.13.0" // Callsite lines, find_type include_code, find_callees dedup
 	mcpServerName = "cie"
 )
 
@@ -130,11 +130,11 @@ Follow this progression for most code exploration tasks:
 
 **cie_get_call_graph** — Combined view: both callers and callees in one call.
 
-**cie_trace_path** — Trace execution path from entry point to target function. Auto-detects entry points (main for Go, index exports for JS/TS, __main__ for Python). Use source parameter to trace between arbitrary functions. Increase max_depth for deeply nested targets. Resolves calls through concrete struct fields and interface parameters with fan-out reduction.
+**cie_trace_path** — Trace execution path from entry point to target function. Auto-detects entry points (main for Go, index exports for JS/TS, __main__ for Python). Use source parameter to trace between arbitrary functions. Increase max_depth for deeply nested targets. Resolves calls through concrete struct fields and interface parameters with fan-out reduction. Shows callsite line numbers (e.g., [called at store.go:63]) so you know exactly where in the caller each call happens.
 
 ### Type & Interface Tools
 
-**cie_find_type** — Find types, structs, interfaces, classes by name. Filter by kind: "struct", "interface", "class", "type_alias".
+**cie_find_type** — Find types, structs, interfaces, classes by name. Filter by kind: "struct", "interface", "class", "type_alias". Use include_code=true to see the type's source code (interface methods, struct fields) without a separate file read.
 
 **cie_find_implementations** — Find concrete types that implement an interface. Works for Go (struct method matching) and TypeScript (implements keyword). Resolves embedded interfaces (e.g., ReadWriter embedding Reader+Writer) and common stdlib interfaces.
 
@@ -645,6 +645,11 @@ func (s *mcpServer) getTools() []mcpTool {
 					"path_pattern": map[string]any{
 						"type":        "string",
 						"description": "Optional regex pattern to filter file paths",
+					},
+					"include_code": map[string]any{
+						"type":        "boolean",
+						"description": "If true, include type source code (interface methods, struct fields). Useful for understanding the shape of a type without reading the file.",
+						"default":     false,
 					},
 					"limit": map[string]any{
 						"type":        "integer",
@@ -1347,11 +1352,13 @@ func handleFindType(ctx context.Context, s *mcpServer, args map[string]any) (*to
 	name, _ := args["name"].(string)
 	kind, _ := args["kind"].(string)
 	pathPattern, _ := args["path_pattern"].(string)
+	includeCode, _ := args["include_code"].(bool)
 	limit, _ := getIntArg(args, "limit", 20)
 	return tools.FindType(ctx, s.client, tools.FindTypeArgs{
 		Name:        name,
 		Kind:        kind,
 		PathPattern: pathPattern,
+		IncludeCode: includeCode,
 		Limit:       limit,
 	})
 }

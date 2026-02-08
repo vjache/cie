@@ -994,10 +994,10 @@ func TestGetCallees_InterfaceDispatch_NonMethod(t *testing.T) {
 
 	_ = getCallees(ctx, client, "main") // plain function, not a method
 
-	// Should issue: 1) cie_calls query, 2) signature query for param dispatch
-	// (no field dispatch since main is not a method)
-	if queryCalls != 2 {
-		t.Errorf("getCallees(\"main\") issued %d queries, want 2 (cie_calls + signature lookup)", queryCalls)
+	// Should issue: 1) cie_calls query, 2) extractCalledMethodsFromCode (cie_function_code),
+	// 3) signature query for param dispatch (no field dispatch since main is not a method)
+	if queryCalls != 3 {
+		t.Errorf("getCallees(\"main\") issued %d queries, want 3 (cie_calls + code + signature)", queryCalls)
 	}
 }
 
@@ -1333,6 +1333,13 @@ func TestGetCallees_ParamDispatch_FilteredFanOut(t *testing.T) {
 						// This represents the "unresolved" callee that matches through interface dispatch
 						{"StoreFact", "pkg/tools/client.go", 50},
 					},
+				}, nil
+			}
+			// Source code query for extractCalledMethodsFromCode
+			if strings.Contains(script, "cie_function_code") {
+				return &QueryResult{
+					Headers: []string{"code_text"},
+					Rows: [][]any{{"func storeFact(client Querier, fact string) error {\n\tclient.StoreFact(ctx, req)\n}"}},
 				}, nil
 			}
 			// Signature query
