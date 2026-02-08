@@ -1,6 +1,6 @@
 <div align="center">
   <h1>CIE - Code Intelligence Engine</h1>
-  <p><strong>Give your AI assistant deep understanding of your codebase</strong></p>
+  <p><strong>20+ MCP tools that give AI agents semantic code search, call graph analysis, and endpoint discovery — 100% local, indexes 100k LOC in seconds.</strong></p>
 
   <img src="docs/cie-demo.gif" alt="CIE Demo" width="800">
 
