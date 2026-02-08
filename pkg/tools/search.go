@@ -209,7 +209,16 @@ func FindCallers(ctx context.Context, client Querier, args FindCallersArgs) (*To
 
 	result, err := client.Query(ctx, script)
 	if err != nil {
-		return NewError(fmt.Sprintf("Query error: %v\n\nGenerated query:\n%s", err, script)), nil
+		// Fallback for indexes without call_line column (pre-v0.7.9 schema)
+		script = fmt.Sprintf(`?[caller_file, caller_name, caller_line, callee_name] :=
+  *cie_calls { caller_id, callee_id },
+  *cie_function { id: callee_id, name: callee_name },
+  *cie_function { id: caller_id, file_path: caller_file, name: caller_name, start_line: caller_line },
+  %s`, condition)
+		result, err = client.Query(ctx, script)
+		if err != nil {
+			return NewError(fmt.Sprintf("Query error: %v\n\nGenerated query:\n%s", err, script)), nil
+		}
 	}
 
 	// Also find callers through interface dispatch:
@@ -263,7 +272,16 @@ func FindCallees(ctx context.Context, client Querier, args FindCalleesArgs) (*To
 
 	result, err := client.Query(ctx, script)
 	if err != nil {
-		return NewError(fmt.Sprintf("Query error: %v\n\nGenerated query:\n%s", err, script)), nil
+		// Fallback for indexes without call_line column (pre-v0.7.9 schema)
+		script = fmt.Sprintf(`?[caller_name, callee_file, callee_name, callee_line] :=
+  *cie_calls { caller_id, callee_id },
+  *cie_function { id: caller_id, name: caller_name },
+  *cie_function { id: callee_id, file_path: callee_file, name: callee_name, start_line: callee_line },
+  %s`, condition)
+		result, err = client.Query(ctx, script)
+		if err != nil {
+			return NewError(fmt.Sprintf("Query error: %v\n\nGenerated query:\n%s", err, script)), nil
+		}
 	}
 
 	// Extract called method names from source code to filter dispatch results.

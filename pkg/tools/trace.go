@@ -526,7 +526,20 @@ func getCallees(ctx context.Context, client Querier, funcName string) []TraceFun
 
 	result, err := client.Query(ctx, script)
 	if err != nil {
-		return nil
+		// Fallback for indexes without call_line column (pre-v0.7.9 schema)
+		script = fmt.Sprintf(
+			`?[callee_name, callee_file, callee_line] :=
+				*cie_calls { caller_id, callee_id },
+				*cie_function { id: caller_id, name: caller_name },
+				*cie_function { id: callee_id, file_path: callee_file, name: callee_name, start_line: callee_line },
+				(caller_name = %q or ends_with(caller_name, %q))
+			:limit 100`,
+			funcName, "."+funcName,
+		)
+		result, err = client.Query(ctx, script)
+		if err != nil {
+			return nil
+		}
 	}
 
 	seen := make(map[string]bool)

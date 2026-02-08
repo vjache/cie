@@ -212,7 +212,43 @@ func (b *EmbeddedBackend) EnsureSchema() error {
 		}
 	}
 
+	// Schema migrations: add columns introduced in newer versions.
+	// CozoDB doesn't support ALTER TABLE, so we migrate by copying data.
+	b.migrateCallsCallLine()
+
 	return nil
+}
+
+// migrateCallsCallLine adds the call_line column to cie_calls if it was created
+// with an older schema (pre-v0.7.9). CozoDB doesn't support ALTER TABLE, so we
+// copy data to a temp table, recreate with the new schema, and copy back.
+// Caller must hold b.mu.
+func (b *EmbeddedBackend) migrateCallsCallLine() {
+	// Probe: try reading call_line — if it works, no migration needed.
+	_, err := b.db.Run(`?[id] := *cie_calls { id, call_line } :limit 1`, nil)
+	if err == nil {
+		return
+	}
+
+	// Copy existing data to temp table
+	_, err = b.db.Run(`?[id, caller_id, callee_id] := *cie_calls { id, caller_id, callee_id } :replace cie_calls_mig { id: String => caller_id: String, callee_id: String }`, nil)
+	if err != nil {
+		return // can't migrate, queries will use fallback
+	}
+
+	// Drop old table and recreate with new schema
+	_, _ = b.db.Run(`::remove cie_calls`, nil)
+	_, err = b.db.Run(`:create cie_calls { id: String => caller_id: String, callee_id: String, call_line: Int default 0 }`, nil)
+	if err != nil {
+		// Restore from temp if create fails
+		_, _ = b.db.Run(`?[id, caller_id, callee_id] := *cie_calls_mig { id, caller_id, callee_id } :replace cie_calls { id: String => caller_id: String, callee_id: String }`, nil)
+		_, _ = b.db.Run(`::remove cie_calls_mig`, nil)
+		return
+	}
+
+	// Copy data back with call_line=0
+	_, _ = b.db.Run(`?[id, caller_id, callee_id, call_line] := *cie_calls_mig { id, caller_id, callee_id }, call_line = 0 :put cie_calls { id, caller_id, callee_id, call_line }`, nil)
+	_, _ = b.db.Run(`::remove cie_calls_mig`, nil)
 }
 
 // CreateHNSWIndex creates HNSW indexes for semantic search.
