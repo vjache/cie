@@ -1437,6 +1437,308 @@ func TestFindFunctionsByName_CaseInsensitive(t *testing.T) {
 }
 
 // ============================================================================
+// Interface Annotation Tests
+// ============================================================================
+
+// Test that ViaIface is set when callees come from interface field dispatch (Phase 2a)
+func TestGetCallees_InterfaceDispatch_ViaIface(t *testing.T) {
+	client := NewMockClientCustom(
+		func(ctx context.Context, script string) (*QueryResult, error) {
+			// Direct callees (cie_calls) — none
+			if strings.Contains(script, "cie_calls") {
+				return &QueryResult{
+					Headers: []string{"callee_name", "callee_file", "callee_line"},
+					Rows:    [][]any{},
+				}, nil
+			}
+			// Phase 2a: Interface field dispatch — returns 4 columns including interface_name
+			if strings.Contains(script, "cie_field") && strings.Contains(script, "cie_implements") && strings.Contains(script, "interface_name") {
+				return &QueryResult{
+					Headers: []string{"callee_name", "callee_file", "callee_line", "interface_name"},
+					Rows: [][]any{
+						{"CIEClient.Query", "pkg/tools/client.go", 50, "Querier"},
+						{"EmbeddedQuerier.Query", "pkg/tools/embedded.go", 30, "Querier"},
+					},
+				}, nil
+			}
+			// Phase 2b: Concrete field dispatch — returns 3 columns (no interface)
+			if strings.Contains(script, "cie_field") && strings.Contains(script, "field_prefix") {
+				return &QueryResult{
+					Headers: []string{"callee_name", "callee_file", "callee_line"},
+					Rows:    [][]any{},
+				}, nil
+			}
+			return &QueryResult{Headers: []string{}, Rows: [][]any{}}, nil
+		},
+		nil,
+	)
+	ctx := context.Background()
+
+	callees := getCallees(ctx, client, "mcpServer.handleToolCall")
+
+	if len(callees) != 2 {
+		t.Fatalf("getCallees() returned %d callees, want 2", len(callees))
+	}
+	for _, c := range callees {
+		if c.ViaIface != "Querier" {
+			t.Errorf("callee %q ViaIface = %q, want %q", c.Name, c.ViaIface, "Querier")
+		}
+	}
+}
+
+// Test that ViaIface is set when callees come from param dispatch (Phase 3)
+func TestGetCallees_ParamDispatch_ViaIface(t *testing.T) {
+	client := NewMockClientCustom(
+		func(ctx context.Context, script string) (*QueryResult, error) {
+			if strings.Contains(script, "cie_calls") {
+				return &QueryResult{
+					Headers: []string{"callee_name", "callee_file", "callee_line"},
+					Rows:    [][]any{},
+				}, nil
+			}
+			if strings.Contains(script, "cie_function_code") {
+				return &QueryResult{
+					Headers: []string{"code_text"},
+					Rows:    [][]any{{"func doWork(q Querier) { q.Query(ctx, s) }"}},
+				}, nil
+			}
+			if strings.Contains(script, "signature") && !strings.Contains(script, "cie_implements") {
+				return &QueryResult{
+					Headers: []string{"signature"},
+					Rows:    [][]any{{"func doWork(q Querier)"}},
+				}, nil
+			}
+			if strings.Contains(script, "cie_implements") {
+				return &QueryResult{
+					Headers: []string{"callee_name", "callee_file", "callee_line"},
+					Rows: [][]any{
+						{"CIEClient.Query", "pkg/tools/client.go", 50},
+					},
+				}, nil
+			}
+			return &QueryResult{Headers: []string{}, Rows: [][]any{}}, nil
+		},
+		nil,
+	)
+	ctx := context.Background()
+
+	callees := getCallees(ctx, client, "doWork")
+	if len(callees) != 1 {
+		t.Fatalf("getCallees() returned %d callees, want 1", len(callees))
+	}
+	if callees[0].ViaIface != "Querier" {
+		t.Errorf("callee ViaIface = %q, want %q", callees[0].ViaIface, "Querier")
+	}
+}
+
+// Test formatTraceOutput includes [via interface X] annotation
+func TestFormatTraceOutput_ViaIface(t *testing.T) {
+	sources := []TraceFuncInfo{{Name: "main", FilePath: "cmd/main.go", Line: "1"}}
+	args := TracePathArgs{Target: "Query", MaxPaths: 3, MaxDepth: 10}
+	path := []TraceFuncInfo{
+		{Name: "main", FilePath: "cmd/main.go", Line: "1"},
+		{Name: "CIEClient.Query", FilePath: "pkg/client.go", Line: "50", ViaIface: "Querier"},
+	}
+	result := traceSearchResult{
+		paths:         [][]TraceFuncInfo{path},
+		nodesExplored: 10,
+	}
+
+	output := formatTraceOutput(sources, args, result)
+
+	if !strings.Contains(output, "[via interface Querier]") {
+		t.Errorf("formatTraceOutput() should contain '[via interface Querier]', got:\n%s", output)
+	}
+}
+
+// ============================================================================
+// Inline Code Tests
+// ============================================================================
+
+// Test truncateCodeLines
+func TestTruncateCodeLines(t *testing.T) {
+	code := "line1\nline2\nline3\nline4\nline5"
+
+	// No truncation
+	result := truncateCodeLines(code, 10)
+	if result != code {
+		t.Errorf("truncateCodeLines(code, 10) should not truncate, got:\n%s", result)
+	}
+
+	// Truncate at 3 lines
+	result = truncateCodeLines(code, 3)
+	if !strings.Contains(result, "line1") || !strings.Contains(result, "line3") {
+		t.Errorf("truncateCodeLines should keep first 3 lines, got:\n%s", result)
+	}
+	if !strings.HasSuffix(result, "\n...") {
+		t.Errorf("truncateCodeLines should end with '...', got:\n%s", result)
+	}
+	if strings.Contains(result, "line4") {
+		t.Errorf("truncateCodeLines should not contain line4, got:\n%s", result)
+	}
+}
+
+// Test formatTraceOutput with inline code
+func TestFormatTraceOutput_WithCode(t *testing.T) {
+	sources := []TraceFuncInfo{{Name: "main", FilePath: "cmd/main.go", Line: "1"}}
+	args := TracePathArgs{Target: "saveToDb", MaxPaths: 3, MaxDepth: 10, IncludeCode: true}
+	path := []TraceFuncInfo{
+		{Name: "main", FilePath: "cmd/main.go", Line: "1", Code: "func main() {\n\thandleRequest()\n}"},
+		{Name: "handleRequest", FilePath: "internal/handler.go", Line: "10", Code: "func handleRequest() {\n\tsaveToDb()\n}"},
+		{Name: "saveToDb", FilePath: "internal/db.go", Line: "20", Code: "func saveToDb() error {\n\treturn nil\n}"},
+	}
+	result := traceSearchResult{
+		paths:         [][]TraceFuncInfo{path},
+		nodesExplored: 5,
+	}
+
+	output := formatTraceOutput(sources, args, result)
+
+	// Should contain code blocks
+	if !strings.Contains(output, "func main()") {
+		t.Error("output should contain main function code")
+	}
+	if !strings.Contains(output, "func handleRequest()") {
+		t.Error("output should contain handleRequest function code")
+	}
+	if !strings.Contains(output, "func saveToDb()") {
+		t.Error("output should contain saveToDb function code")
+	}
+	// Should use markdown bold for function names when code is included
+	if !strings.Contains(output, "**main**") {
+		t.Error("output should use bold for function names with code")
+	}
+	// Should contain code fence markers
+	if !strings.Contains(output, "```go") {
+		t.Error("output should contain go code fence")
+	}
+}
+
+// Test formatTraceOutput without code (default behavior preserved)
+func TestFormatTraceOutput_WithoutCode(t *testing.T) {
+	sources := []TraceFuncInfo{{Name: "main", FilePath: "cmd/main.go", Line: "1"}}
+	args := TracePathArgs{Target: "saveToDb", MaxPaths: 3, MaxDepth: 10}
+	path := []TraceFuncInfo{
+		{Name: "main", FilePath: "cmd/main.go", Line: "1"},
+		{Name: "saveToDb", FilePath: "internal/db.go", Line: "20"},
+	}
+	result := traceSearchResult{
+		paths:         [][]TraceFuncInfo{path},
+		nodesExplored: 5,
+	}
+
+	output := formatTraceOutput(sources, args, result)
+
+	// Default behavior: single code fence wrapping the path
+	if !strings.Contains(output, "```\n") {
+		t.Error("default output should use code fence")
+	}
+	// Should NOT use bold formatting
+	if strings.Contains(output, "**main**") {
+		t.Error("default output should not use bold for function names")
+	}
+}
+
+// Test fetchCodeForPaths populates code on TraceFuncInfo
+func TestFetchCodeForPaths(t *testing.T) {
+	client := NewMockClientCustom(
+		func(ctx context.Context, script string) (*QueryResult, error) {
+			if strings.Contains(script, "cie_function_code") {
+				if strings.Contains(script, "main") {
+					return &QueryResult{
+						Headers: []string{"name", "code_text"},
+						Rows:    [][]any{{"main", "func main() {}"}},
+					}, nil
+				}
+				if strings.Contains(script, "saveToDb") {
+					return &QueryResult{
+						Headers: []string{"name", "code_text"},
+						Rows:    [][]any{{"saveToDb", "func saveToDb() error {\n\treturn nil\n}"}},
+					}, nil
+				}
+			}
+			return &QueryResult{Headers: []string{}, Rows: [][]any{}}, nil
+		},
+		nil,
+	)
+	ctx := context.Background()
+
+	paths := [][]TraceFuncInfo{
+		{
+			{Name: "main", FilePath: "cmd/main.go", Line: "1"},
+			{Name: "saveToDb", FilePath: "internal/db.go", Line: "20"},
+		},
+	}
+
+	fetchCodeForPaths(ctx, client, paths, 10)
+
+	if paths[0][0].Code != "func main() {}" {
+		t.Errorf("main.Code = %q, want 'func main() {}'", paths[0][0].Code)
+	}
+	if paths[0][1].Code == "" {
+		t.Error("saveToDb.Code should be populated")
+	}
+}
+
+// Test TracePath end-to-end with include_code
+func TestTracePath_Unit_IncludeCode(t *testing.T) {
+	functions := map[string]TraceFuncInfo{
+		"main":   {Name: "main", FilePath: "cmd/main.go", Line: "1"},
+		"target": {Name: "target", FilePath: "pkg/target.go", Line: "10"},
+	}
+	callGraph := map[string][]string{
+		"main":   {"target"},
+		"target": {},
+	}
+
+	// Extend the mock to also handle code queries
+	baseMock := createMockCallGraph(functions, callGraph)
+	client := NewMockClientCustom(
+		func(ctx context.Context, script string) (*QueryResult, error) {
+			// Handle code fetch queries
+			if strings.Contains(script, "cie_function_code") && strings.Contains(script, "code_text") &&
+				!strings.Contains(script, "cie_calls") {
+				if strings.Contains(script, `"main"`) {
+					return &QueryResult{
+						Headers: []string{"name", "code_text"},
+						Rows:    [][]any{{"main", "func main() {\n\ttarget()\n}"}},
+					}, nil
+				}
+				if strings.Contains(script, `"target"`) {
+					return &QueryResult{
+						Headers: []string{"name", "code_text"},
+						Rows:    [][]any{{"target", "func target() {\n\tfmt.Println(\"done\")\n}"}},
+					}, nil
+				}
+				return &QueryResult{Headers: []string{}, Rows: [][]any{}}, nil
+			}
+			// Delegate to base mock
+			return baseMock.Query(ctx, script)
+		},
+		nil,
+	)
+
+	ctx := context.Background()
+	result, err := TracePath(ctx, client, TracePathArgs{
+		Target:      "target",
+		Source:      "main",
+		MaxPaths:    3,
+		MaxDepth:    10,
+		IncludeCode: true,
+	})
+	if err != nil {
+		t.Fatalf("TracePath() error = %v", err)
+	}
+
+	if !strings.Contains(result.Text, "func main()") {
+		t.Errorf("TracePath with include_code should contain main's code, got:\n%s", result.Text)
+	}
+	if !strings.Contains(result.Text, "func target()") {
+		t.Errorf("TracePath with include_code should contain target's code, got:\n%s", result.Text)
+	}
+}
+
+// ============================================================================
 // INTEGRATION TESTS (require CozoDB - see trace_integration_test.go)
 // ============================================================================
 

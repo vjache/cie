@@ -34,6 +34,8 @@ type TraceFuncInfo struct {
 	FilePath string
 	Line     string
 	CallLine string // Line in the caller where this function is called (empty = unknown)
+	Code     string // Function source code (populated when include_code=true)
+	ViaIface string // Interface name if dispatched via interface (e.g., "Querier")
 }
 
 // TracePathArgs holds arguments for tracing call paths
@@ -44,6 +46,8 @@ type TracePathArgs struct {
 	MaxPaths    int
 	MaxDepth    int
 	Waypoints   []string // Intermediate functions the path must pass through, in order
+	IncludeCode bool     // If true, embed function source code inline in output
+	CodeLines   int      // Max lines of code to show per function (default 10)
 }
 
 // TracePath traces call paths from source function(s) to a target function.
@@ -91,6 +95,12 @@ func TracePath(ctx context.Context, client Querier, args TracePathArgs) (*ToolRe
 		}
 		return NewResult(formatTraceNotFound(sources, args, searchResult)), nil
 	}
+
+	// Fetch inline code if requested (after BFS, only for functions in found paths)
+	if args.IncludeCode {
+		fetchCodeForPaths(ctx, client, searchResult.paths, args.CodeLines)
+	}
+
 	return NewResult(formatTraceOutput(sources, args, searchResult)), nil
 }
 
@@ -172,26 +182,16 @@ func traceWithWaypoints(ctx context.Context, client Querier, args TracePathArgs)
 		fullPath = append(fullPath, segPath...)
 	}
 
+	// Fetch inline code if requested
+	if args.IncludeCode {
+		fetchCodeForPaths(ctx, client, [][]TraceFuncInfo{fullPath}, args.CodeLines)
+	}
+
 	// Format output
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "## Call Path to `%s` (via %d waypoint(s))\n\n", args.Target, len(args.Waypoints))
 	fmt.Fprintf(&sb, "_Explored %d total nodes across %d segment(s)._\n\n", totalNodes, len(stops)-1)
-	sb.WriteString("```\n")
-	for i, fn := range fullPath {
-		indent := strings.Repeat("  ", i)
-		arrow := ""
-		if i > 0 {
-			arrow = "→ "
-		}
-		fmt.Fprintf(&sb, "%s%s%s\n", indent, arrow, fn.Name)
-		locInfo := fmt.Sprintf("%s:%s", ExtractFileName(fn.FilePath), fn.Line)
-		if fn.CallLine != "" && i > 0 {
-			prevFile := ExtractFileName(fullPath[i-1].FilePath)
-			locInfo += fmt.Sprintf("  [called at %s:%s]", prevFile, fn.CallLine)
-		}
-		fmt.Fprintf(&sb, "%s   %s\n", indent, locInfo)
-	}
-	sb.WriteString("```\n")
+	formatTracePath(&sb, fullPath, args.IncludeCode)
 
 	return NewResult(sb.String()), nil
 }
@@ -339,6 +339,64 @@ func searchFromSource(ctx context.Context, client Querier, src TraceFuncInfo, ta
 	return result
 }
 
+// fetchCodeForPaths batch-fetches function source code for all unique functions
+// in the given paths and populates each TraceFuncInfo.Code field in-place.
+// codeLines limits the number of lines shown per function (0 = default 10).
+func fetchCodeForPaths(ctx context.Context, client Querier, paths [][]TraceFuncInfo, codeLines int) {
+	if codeLines <= 0 {
+		codeLines = 10
+	}
+
+	// Collect unique function names across all paths
+	seen := make(map[string]bool)
+	var funcNames []string
+	for _, path := range paths {
+		for _, fn := range path {
+			if !seen[fn.Name] {
+				seen[fn.Name] = true
+				funcNames = append(funcNames, fn.Name)
+			}
+		}
+	}
+
+	// Fetch code for each unique function
+	codeMap := make(map[string]string, len(funcNames))
+	for _, name := range funcNames {
+		script := fmt.Sprintf(
+			`?[name, code_text] :=
+				*cie_function { id, name },
+				*cie_function_code { function_id: id, code_text },
+				(name = %q or ends_with(name, %q))
+			:limit 1`, name, "."+name)
+		result, err := client.Query(ctx, script)
+		if err != nil || len(result.Rows) == 0 {
+			continue
+		}
+		code := AnyToString(result.Rows[0][1])
+		if code != "" {
+			codeMap[AnyToString(result.Rows[0][0])] = truncateCodeLines(code, codeLines)
+		}
+	}
+
+	// Populate Code field on each TraceFuncInfo in the paths
+	for i := range paths {
+		for j := range paths[i] {
+			if code, ok := codeMap[paths[i][j].Name]; ok {
+				paths[i][j].Code = code
+			}
+		}
+	}
+}
+
+// truncateCodeLines truncates code to maxLines, appending "..." if truncated.
+func truncateCodeLines(code string, maxLines int) string {
+	lines := strings.SplitN(code, "\n", maxLines+1)
+	if len(lines) <= maxLines {
+		return code
+	}
+	return strings.Join(lines[:maxLines], "\n") + "\n..."
+}
+
 // formatTraceNotFound formats the output when no paths are found.
 func formatTraceNotFound(sources []TraceFuncInfo, args TracePathArgs, result traceSearchResult) string {
 	var sb strings.Builder
@@ -394,23 +452,9 @@ func formatTraceOutput(sources []TraceFuncInfo, args TracePathArgs, result trace
 	fmt.Fprintf(&sb, "_Explored %d nodes._\n\n", result.nodesExplored)
 
 	for i, path := range result.paths {
-		fmt.Fprintf(&sb, "### Path %d (depth: %d)\n\n```\n", i+1, len(path)-1)
-		for j, fn := range path {
-			indent := strings.Repeat("  ", j)
-			arrow := ""
-			if j > 0 {
-				arrow = "→ "
-			}
-			fmt.Fprintf(&sb, "%s%s%s\n", indent, arrow, fn.Name)
-			locInfo := fmt.Sprintf("%s:%s", ExtractFileName(fn.FilePath), fn.Line)
-			if fn.CallLine != "" {
-				// Show where in the previous function this call happens
-				prevFile := ExtractFileName(path[j-1].FilePath)
-				locInfo += fmt.Sprintf("  [called at %s:%s]", prevFile, fn.CallLine)
-			}
-			fmt.Fprintf(&sb, "%s   %s\n", indent, locInfo)
-		}
-		sb.WriteString("```\n\n")
+		fmt.Fprintf(&sb, "### Path %d (depth: %d)\n\n", i+1, len(path)-1)
+		formatTracePath(&sb, path, args.IncludeCode)
+		sb.WriteString("\n")
 	}
 
 	if len(result.paths) >= args.MaxPaths {
@@ -420,6 +464,55 @@ func formatTraceOutput(sources []TraceFuncInfo, args TracePathArgs, result trace
 		sb.WriteString("\n**Note:** Search limit reached. There may be additional paths not shown.\n")
 	}
 	return sb.String()
+}
+
+// formatTracePath writes a single trace path to the builder.
+// If includeCode is true, renders each hop with its source code.
+func formatTracePath(sb *strings.Builder, path []TraceFuncInfo, includeCode bool) {
+	if !includeCode {
+		sb.WriteString("```\n")
+	}
+	for j, fn := range path {
+		indent := strings.Repeat("  ", j)
+		arrow := ""
+		if j > 0 {
+			arrow = "→ "
+		}
+		nameStr := fn.Name
+		if fn.ViaIface != "" {
+			nameStr += fmt.Sprintf("  [via interface %s]", fn.ViaIface)
+		}
+		locInfo := fmt.Sprintf("%s:%s", ExtractFileName(fn.FilePath), fn.Line)
+		if fn.CallLine != "" {
+			prevFile := ExtractFileName(path[j-1].FilePath)
+			locInfo += fmt.Sprintf("  [called at %s:%s]", prevFile, fn.CallLine)
+		}
+
+		if includeCode {
+			fmt.Fprintf(sb, "%s%s**%s**\n", indent, arrow, nameStr)
+			fmt.Fprintf(sb, "%s   %s\n", indent, locInfo)
+			writeInlineCode(sb, fn, indent)
+		} else {
+			fmt.Fprintf(sb, "%s%s%s\n", indent, arrow, nameStr)
+			fmt.Fprintf(sb, "%s   %s\n", indent, locInfo)
+		}
+	}
+	if !includeCode {
+		sb.WriteString("```\n")
+	}
+}
+
+// writeInlineCode writes a code block for a function with indentation.
+func writeInlineCode(sb *strings.Builder, fn TraceFuncInfo, indent string) {
+	if fn.Code == "" {
+		return
+	}
+	lang := detectLanguage(fn.FilePath)
+	fmt.Fprintf(sb, "%s   ```%s\n", indent, lang)
+	for _, line := range strings.Split(fn.Code, "\n") {
+		fmt.Fprintf(sb, "%s   %s\n", indent, line)
+	}
+	fmt.Fprintf(sb, "%s   ```\n", indent)
 }
 
 // detectEntryPoints finds entry point functions based on language conventions
@@ -566,18 +659,32 @@ func getCallees(ctx context.Context, client Querier, funcName string) []TraceFun
 	// to filter results to only methods actually invoked in the function body.
 	calledMethods := extractCalledMethodsFromCode(ctx, client, funcName)
 
+	// ifaceMap collects interface dispatch info from Phases 2a/3 so we can
+	// annotate Phase 1 results that were found as direct calls but are
+	// actually dispatched through an interface.
+	ifaceMap := make(map[string]string)
+
 	// 2 & 2b. Field-based dispatch (interface + concrete)
 	structName := extractStructName(funcName)
 	if structName != "" {
-		fieldCallees := getCalleesViaFields(ctx, client, funcName, structName, seen, calledMethods)
+		fieldCallees := getCalleesViaFields(ctx, client, funcName, structName, seen, calledMethods, ifaceMap)
 		ret = append(ret, fieldCallees...)
 	}
 
 	// 3. Parameter-based interface dispatch
 	// Always run: a method can have BOTH field-based callees (Phase 2) AND
 	// parameter-based interface calls.
-	paramCallees := getCalleesViaParams(ctx, client, funcName, seen, calledMethods)
+	paramCallees := getCalleesViaParams(ctx, client, funcName, seen, calledMethods, ifaceMap)
 	ret = append(ret, paramCallees...)
+
+	// Annotate Phase 1 results with interface dispatch info from Phases 2a/3
+	for i := range ret {
+		if ret[i].ViaIface == "" {
+			if iface, ok := ifaceMap[ret[i].Name]; ok {
+				ret[i].ViaIface = iface
+			}
+		}
+	}
 
 	return ret
 }
@@ -586,12 +693,12 @@ func getCallees(ctx context.Context, client Querier, funcName string) []TraceFun
 // Phase 2: interface-typed fields → concrete implementations.
 // Phase 2b: concrete-typed fields → direct method lookup.
 // Uses source code analysis to filter results to only actually called methods.
-func getCalleesViaFields(ctx context.Context, client Querier, funcName, structName string, seen map[string]bool, calledMethods map[string]bool) []TraceFuncInfo {
+func getCalleesViaFields(ctx context.Context, client Querier, funcName, structName string, seen map[string]bool, calledMethods map[string]bool, ifaceMap map[string]string) []TraceFuncInfo {
 	var ret []TraceFuncInfo
 
-	// Phase 2: Interface field dispatch
+	// Phase 2: Interface field dispatch (returns interface_name as 4th column for ViaIface)
 	dispatchScript := fmt.Sprintf(
-		`?[callee_name, callee_file, callee_line] :=
+		`?[callee_name, callee_file, callee_line, interface_name] :=
 			*cie_field { struct_name: %q, field_type },
 			*cie_implements { interface_name },
 			(field_type = interface_name or ends_with(field_type, concat(".", interface_name))),
@@ -605,7 +712,7 @@ func getCalleesViaFields(ctx context.Context, client Querier, funcName, structNa
 	)
 	dispatchResult, err := client.Query(ctx, dispatchScript)
 	if err == nil {
-		ret = appendFilteredCallees(ret, dispatchResult, seen, calledMethods)
+		ret = appendFilteredCallees(ret, dispatchResult, seen, calledMethods, ifaceMap)
 	}
 
 	// Phase 2b: Concrete field dispatch
@@ -620,7 +727,7 @@ func getCalleesViaFields(ctx context.Context, client Querier, funcName, structNa
 	)
 	concreteResult, err := client.Query(ctx, concreteScript)
 	if err == nil {
-		ret = appendFilteredCallees(ret, concreteResult, seen, calledMethods)
+		ret = appendFilteredCallees(ret, concreteResult, seen, calledMethods, ifaceMap)
 	}
 
 	return ret
@@ -628,9 +735,18 @@ func getCalleesViaFields(ctx context.Context, client Querier, funcName, structNa
 
 // appendFilteredCallees adds query results to ret, filtering by seen map and
 // optionally by calledMethods (method names extracted from source code).
-func appendFilteredCallees(ret []TraceFuncInfo, result *QueryResult, seen map[string]bool, calledMethods map[string]bool) []TraceFuncInfo {
+// If the query returns a 4th column (interface_name), it is set as ViaIface.
+// ifaceMap collects interface dispatch info for ALL results (even already-seen names)
+// so that Phase 1 results can be annotated post-hoc.
+func appendFilteredCallees(ret []TraceFuncInfo, result *QueryResult, seen map[string]bool, calledMethods map[string]bool, ifaceMap map[string]string) []TraceFuncInfo {
 	for _, row := range result.Rows {
 		name := AnyToString(row[0])
+		// Record interface dispatch info before seen-check
+		if len(row) > 3 {
+			if iface := AnyToString(row[3]); iface != "" && ifaceMap != nil {
+				ifaceMap[name] = iface
+			}
+		}
 		if seen[name] {
 			continue
 		}
@@ -640,11 +756,15 @@ func appendFilteredCallees(ret []TraceFuncInfo, result *QueryResult, seen map[st
 			}
 		}
 		seen[name] = true
-		ret = append(ret, TraceFuncInfo{
+		info := TraceFuncInfo{
 			Name:     name,
 			FilePath: AnyToString(row[1]),
 			Line:     AnyToString(row[2]),
-		})
+		}
+		if len(row) > 3 {
+			info.ViaIface = AnyToString(row[3])
+		}
+		ret = append(ret, info)
 	}
 	return ret
 }
@@ -653,7 +773,7 @@ func appendFilteredCallees(ret []TraceFuncInfo, result *QueryResult, seen map[st
 // Queries the function's signature, parses parameter types, and for each interface-typed
 // parameter, finds concrete implementations and their methods.
 // calledMethods (from source code analysis) filters results to only methods actually called.
-func getCalleesViaParams(ctx context.Context, client Querier, funcName string, seen map[string]bool, calledMethods map[string]bool) []TraceFuncInfo {
+func getCalleesViaParams(ctx context.Context, client Querier, funcName string, seen map[string]bool, calledMethods map[string]bool, ifaceMap map[string]string) []TraceFuncInfo {
 	// Query the function's signature
 	sigScript := fmt.Sprintf(
 		`?[signature] := *cie_function { name, signature }, (name = %q or ends_with(name, %q)) :limit 1`,
@@ -701,6 +821,10 @@ func getCalleesViaParams(ctx context.Context, client Querier, funcName string, s
 
 		for _, row := range implResult.Rows {
 			name := AnyToString(row[0])
+			// Record interface dispatch info before seen-check
+			if ifaceMap != nil {
+				ifaceMap[name] = p.Type
+			}
 			// Fan-out reduction: only include methods actually called in source code.
 			if calledMethods != nil {
 				methodName := extractMethodName(name)
@@ -714,6 +838,7 @@ func getCalleesViaParams(ctx context.Context, client Querier, funcName string, s
 					Name:     name,
 					FilePath: AnyToString(row[1]),
 					Line:     AnyToString(row[2]),
+					ViaIface: p.Type,
 				})
 			}
 		}
