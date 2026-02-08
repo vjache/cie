@@ -453,14 +453,14 @@ Signature: func (r *Router) BuildRoutes() error
 
 ### cie_find_callers
 
-Find all functions that call a specific function. Useful for understanding how a function is used throughout the codebase (impact analysis).
+Find all functions that call a specific function. Excludes test files. Useful for understanding how a function is used throughout the codebase (impact analysis).
 
 **Parameters:**
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `function_name` | string | Yes | — | Name of the function to find callers for (e.g., "Batch", "NewBatcher") |
-| `include_indirect` | bool | No | false | If true, include indirect callers (callers of callers) - can be expensive |
+| `include_indirect` | bool | No | false | If true, include transitive callers (callers of callers, up to 3 levels deep) - can be expensive |
 
 **Example:**
 
@@ -505,13 +505,14 @@ Found 8 direct callers:
 
 ### cie_find_callees
 
-Find all functions called by a specific function. Useful for understanding a function's dependencies.
+Find all functions called by a specific function. Excludes test files. Useful for understanding a function's dependencies and blast radius.
 
 **Parameters:**
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
 | `function_name` | string | Yes | — | Name of the function to find callees for |
+| `include_indirect` | bool | No | false | If true, include transitive callees (callees of callees, up to 3 levels deep) - can be expensive |
 
 **Example:**
 
@@ -541,10 +542,12 @@ Find all functions called by a specific function. Useful for understanding a fun
 -  **Code review** - Understand what a complex function is doing by seeing its calls
 - 📊 **Combine with `cie_get_function_code`** - See both implementation and call list together
 - 🔗 **Use with `cie_get_call_graph`** for complete picture - See both callers and callees
+- 🌳 **Blast radius** - Use `include_indirect=true` to see the full transitive call tree (up to 3 levels)
 
 **Common Mistakes:**
 
 - No Expecting external library calls to show file paths (they show as "external")
+- No Using `include_indirect=true` on large codebases without reviewing output size first
 - Yes Combine with `cie_trace_path` to see how this function fits in execution flow
 
 ---
@@ -1987,7 +1990,7 @@ If searches return no results:
 
 - Add `path_pattern` to narrow search scope
 - Reduce `limit` parameter
-- Avoid `include_indirect=true` in `cie_find_callers`
+- Avoid `include_indirect=true` in `cie_find_callers` or `cie_find_callees`
 - Use `cie_grep` instead of `cie_search_text` for literal text
 
 ### "Code truncated" in function code
@@ -2017,4 +2020,4 @@ Set `full_code=true` parameter:
 
 **Last Updated:** 2026-02-07
 **Schema Version:** v3
-**CIE Version:** 0.7.8
+**CIE Version:** 0.7.11

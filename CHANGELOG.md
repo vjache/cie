@@ -5,6 +5,15 @@ All notable changes to CIE (Code Intelligence Engine) will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.11] - 2026-02-07
+
+### Added
+- **Transitive callers/callees** — `cie_find_callers` and `cie_find_callees` now support `include_indirect=true` for BFS expansion up to 3 levels deep (max 100 results). Cycle-safe via visited set. Useful for blast radius analysis and understanding deep call chains without manual iteration.
+- **Test file exclusion in callers/callees** — All query phases in `FindCallers` and `FindCallees` now filter out `_test.go` files. Previously, Phase 1 and some dispatch phases included test/mock code in results (e.g., `MockQuerier`, `TestCIEClient`).
+
+### Changed
+- MCP server version bumped to 1.14.0.
+
 ## [0.7.10] - 2026-02-07
 
 ### Fixed
@@ -310,7 +319,11 @@ Initial open source release of CIE (Code Intelligence Engine).
 - No hardcoded credentials in codebase
 - All API keys via environment variables only
 
-[unreleased]: https://github.com/kraklabs/cie/compare/v0.7.7...HEAD
+[unreleased]: https://github.com/kraklabs/cie/compare/v0.7.11...HEAD
+[0.7.11]: https://github.com/kraklabs/cie/compare/v0.7.10...v0.7.11
+[0.7.10]: https://github.com/kraklabs/cie/compare/v0.7.9...v0.7.10
+[0.7.9]: https://github.com/kraklabs/cie/compare/v0.7.8...v0.7.9
+[0.7.8]: https://github.com/kraklabs/cie/compare/v0.7.7...v0.7.8
 [0.7.7]: https://github.com/kraklabs/cie/compare/v0.7.5...v0.7.7
 
 [0.7.5]: https://github.com/kraklabs/cie/compare/v0.7.4...v0.7.5

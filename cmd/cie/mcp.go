@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	mcpVersion    = "1.13.1" // Backward-compatible call_line queries + schema migration
+	mcpVersion    = "1.14.0" // Transitive callers/callees + test file exclusion
 	mcpServerName = "cie"
 )
 
