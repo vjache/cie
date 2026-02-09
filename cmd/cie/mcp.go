@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	mcpVersion    = "1.16.2" // fix resolver hang on large repos (negative cache + stubMu split)
+	mcpVersion    = "1.16.3" // per-worker parallel resolver, pre-warm import cache, diagnostic timing
 	mcpServerName = "cie"
 )
 

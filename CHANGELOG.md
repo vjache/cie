@@ -5,6 +5,19 @@ All notable changes to CIE (Code Intelligence Engine) will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.16] - 2026-02-09
+
+### Fixed
+- **Resolver stall on large repositories (>1000 unresolved calls)** — Replaced channel-based parallel resolver with per-worker local slice collection. The previous design used a shared `results` channel buffered at `len(unresolvedCalls)`, but interface dispatch fan-out (1 call → N implementing types) could exceed the buffer, causing backpressure that serialized all 8 workers. Now each worker collects edges into its own `[]CallsEdge` and results are merged after `wg.Wait()`.
+- **Write-lock contention during parallel cache warming** — Added `preWarmImportCache()` that resolves all unique import paths sequentially before spawning parallel workers. Workers now only hit the fast `RLock` path on `mu`, eliminating write-lock contention that serialized resolution.
+- **Inconsistent checkmarks in indexing summary** — Only "Files Processed" showed ✓ in the completion output, making other counts appear unsuccessful. All non-zero counts now display ✓.
+
+### Added
+- Diagnostic timing logs for call resolution: `resolve_calls.start` (with unresolved call count, package count, cache warm time) and `cross_package_calls.resolved` (with total resolve time in ms).
+
+### Changed
+- MCP server version bumped to 1.16.3.
+
 ## [0.7.15] - 2026-02-09
 
 ### Fixed
@@ -356,7 +369,8 @@ Initial open source release of CIE (Code Intelligence Engine).
 - No hardcoded credentials in codebase
 - All API keys via environment variables only
 
-[unreleased]: https://github.com/kraklabs/cie/compare/v0.7.15...HEAD
+[unreleased]: https://github.com/kraklabs/cie/compare/v0.7.16...HEAD
+[0.7.16]: https://github.com/kraklabs/cie/compare/v0.7.15...v0.7.16
 [0.7.15]: https://github.com/kraklabs/cie/compare/v0.7.14...v0.7.15
 [0.7.14]: https://github.com/kraklabs/cie/compare/v0.7.13...v0.7.14
 [0.7.13]: https://github.com/kraklabs/cie/compare/v0.7.12...v0.7.13
