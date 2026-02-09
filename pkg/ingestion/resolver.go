@@ -24,9 +24,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -34,9 +32,6 @@ import (
 // It builds an index of all functions and imports, then resolves
 // unresolved calls from the parsing phase.
 type CallResolver struct {
-	mu     sync.RWMutex // protects importPathToPackagePath (used by findPackageByImportPath)
-	stubMu sync.RWMutex // protects qualifiedFunctions + stubFunctions during parallel resolution
-
 	// packageIndex: directory path → PackageInfo
 	packageIndex map[string]*PackageInfo
 
@@ -182,54 +177,24 @@ func (r *CallResolver) buildImportPathMapping() {
 
 // ResolveCalls resolves unresolved calls to their target functions.
 // Returns the resolved call edges.
-// Uses parallel processing for large call sets (>1000 calls).
+//
+// Uses sequential processing — each call is a fast in-memory map lookup (~1μs),
+// so 25K calls complete in ~25ms. Parallel resolution was removed because Go's
+// RWMutex interleaving between mu and stubMu caused non-deterministic worker
+// hangs on large multi-language repositories.
 func (r *CallResolver) ResolveCalls(unresolvedCalls []UnresolvedCall) []CallsEdge {
-	// For small sets, use sequential processing (avoid goroutine overhead)
-	if len(unresolvedCalls) < 1000 {
-		slog.Info("resolver.resolve_calls", "mode", "sequential", "calls", len(unresolvedCalls))
-		return r.resolveCallsSequential(unresolvedCalls)
-	}
-
-	// Pre-warm the import path cache before going parallel.
-	// This resolves all unique import paths under a single-threaded write lock,
-	// so parallel workers only ever hit the fast RLock path.
-	warmStart := time.Now()
-	r.preWarmImportCache(unresolvedCalls)
-	slog.Info("resolver.resolve_calls",
-		"mode", "parallel",
+	start := time.Now()
+	slog.Info("resolver.resolve_calls", "mode", "sequential", "calls", len(unresolvedCalls))
+	resolved := r.resolveCallsSequential(unresolvedCalls)
+	slog.Info("resolver.resolve_calls.done",
 		"calls", len(unresolvedCalls),
-		"cache_warm_ms", time.Since(warmStart).Milliseconds(),
-		"cached_imports", len(r.importPathToPackagePath),
+		"resolved", len(resolved),
+		"ms", time.Since(start).Milliseconds(),
 	)
-
-	return r.resolveCallsParallel(unresolvedCalls)
+	return resolved
 }
 
-// preWarmImportCache resolves all unique import paths sequentially so that
-// parallel workers never hit the expensive write-lock path in findPackageByImportPath.
-func (r *CallResolver) preWarmImportCache(unresolvedCalls []UnresolvedCall) {
-	seen := make(map[string]bool)
-	for _, call := range unresolvedCalls {
-		if !strings.Contains(call.CalleeName, ".") {
-			continue
-		}
-		imports, ok := r.fileImports[call.FilePath]
-		if !ok {
-			continue
-		}
-		parts := strings.SplitN(call.CalleeName, ".", 2)
-		importPath, ok := imports[parts[0]]
-		if !ok {
-			continue
-		}
-		if !seen[importPath] {
-			seen[importPath] = true
-			r.findPackageByImportPath(importPath)
-		}
-	}
-}
-
-// resolveCallsSequential processes calls sequentially (for small sets).
+// resolveCallsSequential processes calls sequentially.
 func (r *CallResolver) resolveCallsSequential(unresolvedCalls []UnresolvedCall) []CallsEdge {
 	var resolved []CallsEdge
 	seen := make(map[string]bool)
@@ -261,130 +226,6 @@ func (r *CallResolver) resolveCallsSequential(unresolvedCalls []UnresolvedCall) 
 	}
 
 	return resolved
-}
-
-// resolveCallsParallel processes calls in parallel using worker pool.
-// Each worker collects results into a local slice (no shared channel),
-// then results are merged after all workers finish.
-func (r *CallResolver) resolveCallsParallel(unresolvedCalls []UnresolvedCall) []CallsEdge {
-	numWorkers := runtime.NumCPU()
-	if numWorkers > 8 {
-		numWorkers = 8 // Cap at 8 workers
-	}
-
-	// Partition work into chunks — each worker gets its own slice range
-	chunkSize := (len(unresolvedCalls) + numWorkers - 1) / numWorkers
-	workerResults := make([][]CallsEdge, numWorkers)
-
-	var wg sync.WaitGroup
-	workerStart := time.Now()
-	for w := 0; w < numWorkers; w++ {
-		start := w * chunkSize
-		end := start + chunkSize
-		if end > len(unresolvedCalls) {
-			end = len(unresolvedCalls)
-		}
-		if start >= end {
-			continue
-		}
-
-		wg.Add(1)
-		go func(workerID, start, end int) {
-			defer wg.Done()
-			workerResults[workerID] = r.runResolveWorker(workerID, unresolvedCalls[start:end])
-		}(w, start, end)
-	}
-
-	// Heartbeat ticker so the user knows the process is alive
-	done := make(chan struct{})
-	go func() {
-		ticker := time.NewTicker(5 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				slog.Info("resolver.parallel.heartbeat",
-					"elapsed_s", int(time.Since(workerStart).Seconds()),
-				)
-			case <-done:
-				return
-			}
-		}
-	}()
-
-	wg.Wait()
-	close(done)
-	slog.Info("resolver.parallel.done",
-		"workers", numWorkers,
-		"total_ms", time.Since(workerStart).Milliseconds(),
-	)
-
-	// Merge and deduplicate results from all workers
-	seen := make(map[string]bool)
-	var resolved []CallsEdge
-	for _, results := range workerResults {
-		for _, edge := range results {
-			edgeKey := edge.CallerID + "->" + edge.CalleeID
-			if !seen[edgeKey] {
-				seen[edgeKey] = true
-				resolved = append(resolved, edge)
-			}
-		}
-	}
-
-	return resolved
-}
-
-// runResolveWorker processes a chunk of unresolved calls and returns the resolved edges.
-func (r *CallResolver) runResolveWorker(workerID int, calls []UnresolvedCall) []CallsEdge {
-	wStart := time.Now()
-	var local []CallsEdge
-	var directHits, ifaceHits, misses int
-
-	for i, call := range calls {
-		if i > 0 && i%1000 == 0 {
-			slog.Info("resolver.worker.progress",
-				"worker", workerID,
-				"processed", i,
-				"of", len(calls),
-				"elapsed_ms", time.Since(wStart).Milliseconds(),
-			)
-		}
-		calleeID := r.resolveCall(call)
-		if calleeID != "" {
-			directHits++
-			local = append(local, CallsEdge{
-				CallerID: call.CallerID,
-				CalleeID: calleeID,
-				CallLine: call.Line,
-			})
-			continue
-		}
-		ifaceEdges := r.resolveInterfaceCall(call)
-		if len(ifaceEdges) > 0 {
-			ifaceHits++
-		} else {
-			misses++
-		}
-		for _, edge := range ifaceEdges {
-			local = append(local, CallsEdge{
-				CallerID: edge.CallerID,
-				CalleeID: edge.CalleeID,
-				CallLine: call.Line,
-			})
-		}
-	}
-
-	slog.Info("resolver.worker.done",
-		"worker", workerID,
-		"calls", len(calls),
-		"direct", directHits,
-		"iface", ifaceHits,
-		"miss", misses,
-		"edges", len(local),
-		"ms", time.Since(wStart).Milliseconds(),
-	)
-	return local
 }
 
 // resolveCall attempts to resolve a single unresolved call.
@@ -463,18 +304,7 @@ func (r *CallResolver) lookupFunctionInPackage(importPath, funcName string) stri
 
 // findPackageByImportPath finds our internal package path from an import path.
 func (r *CallResolver) findPackageByImportPath(importPath string) string {
-	r.mu.RLock()
 	// Direct match
-	if pkgPath, exists := r.importPathToPackagePath[importPath]; exists {
-		r.mu.RUnlock()
-		return pkgPath
-	}
-	r.mu.RUnlock()
-
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	// Double check after acquiring lock
 	if pkgPath, exists := r.importPathToPackagePath[importPath]; exists {
 		return pkgPath
 	}
@@ -496,8 +326,7 @@ func (r *CallResolver) findPackageByImportPath(importPath string) string {
 		}
 	}
 
-	// Cache negative result to avoid repeated full scans under write lock.
-	// packageIndex is immutable during resolution, so this is safe.
+	// Cache negative result to avoid repeated full scans.
 	r.importPathToPackagePath[importPath] = ""
 	return ""
 }
@@ -631,10 +460,8 @@ func (r *CallResolver) resolveInterfaceCallViaParams(call UnresolvedCall) []Call
 // For external types not in the index, generates synthetic stub entries.
 func (r *CallResolver) resolveToImplementations(callerID, methodName, fieldType string) []CallsEdge {
 	// 1. Try interface dispatch: fieldType is an interface with known implementors
-	// implementsIndex is read-only during parallel resolution, no lock needed.
 	implTypes, ok := r.implementsIndex[fieldType]
 	if ok {
-		r.stubMu.RLock()
 		var edges []CallsEdge
 		for _, implType := range implTypes {
 			qualifiedName := implType + "." + methodName
@@ -645,7 +472,6 @@ func (r *CallResolver) resolveToImplementations(callerID, methodName, fieldType 
 				})
 			}
 		}
-		r.stubMu.RUnlock()
 		if len(edges) > 0 {
 			return edges
 		}
@@ -653,25 +479,15 @@ func (r *CallResolver) resolveToImplementations(callerID, methodName, fieldType 
 
 	// 2. Concrete type fallback: fieldType is a concrete type (e.g., CozoDB)
 	qualifiedName := fieldType + "." + methodName
-	r.stubMu.RLock()
 	if calleeID, ok := r.qualifiedFunctions[qualifiedName]; ok {
-		r.stubMu.RUnlock()
 		return []CallsEdge{{CallerID: callerID, CalleeID: calleeID}}
 	}
-	r.stubMu.RUnlock()
 
 	// 3. External type stub: type not in index (e.g., sql.DB, http.Client)
-	// Skip primitive/builtin types that can't have methods
 	if isPrimitiveOrBuiltinType(fieldType) {
 		return nil
 	}
 
-	r.stubMu.Lock()
-	// Double-check after acquiring write lock: another goroutine may have created the stub.
-	if calleeID, ok := r.qualifiedFunctions[qualifiedName]; ok {
-		r.stubMu.Unlock()
-		return []CallsEdge{{CallerID: callerID, CalleeID: calleeID}}
-	}
 	stubID := generateExternalStubID(fieldType, methodName)
 	r.qualifiedFunctions[qualifiedName] = stubID
 	r.stubFunctions = append(r.stubFunctions, FunctionEntity{
@@ -681,7 +497,6 @@ func (r *CallResolver) resolveToImplementations(callerID, methodName, fieldType 
 		StartLine: 1,
 		EndLine:   1,
 	})
-	r.stubMu.Unlock()
 	return []CallsEdge{{CallerID: callerID, CalleeID: stubID}}
 }
 
