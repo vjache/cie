@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	mcpVersion    = "1.16.5" // sequential-only resolver, remove parallel deadlock
+	mcpVersion    = "1.16.6" // fix infinite loop in sigparse splitParamTokens
 	mcpServerName = "cie"
 )
 

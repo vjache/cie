@@ -5,6 +5,17 @@ All notable changes to CIE (Code Intelligence Engine) will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.19] - 2026-02-09
+
+### Fixed
+- **Infinite loop in signature parser** — `splitParamTokens` used `(` and `)` as token stop characters but never advanced past them, causing an infinite loop when Go function signatures contained `map[K]func()`, `chan func()`, `interface{ Method() }`, or any type with parentheses not preceded by `func`. A single function with such a signature would hang `cie index` indefinitely. Fixed by skipping balanced parentheses instead of stopping at them.
+
+### Added
+- Unit tests for `pkg/sigparse` covering basic parsing, grouped params, qualified types, and the infinite loop regression.
+
+### Changed
+- MCP server version bumped to 1.16.6.
+
 ## [0.7.18] - 2026-02-09
 
 ### Fixed
