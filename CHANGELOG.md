@@ -5,6 +5,18 @@ All notable changes to CIE (Code Intelligence Engine) will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.18] - 2026-02-09
+
+### Fixed
+- **Resolver deadlock on large repositories** — Parallel call resolution caused 2 of 8 workers to hang indefinitely due to non-deterministic `RWMutex` interleaving between `mu` and `stubMu`. Diagnostic logs from v0.7.17 confirmed 6 workers completed in 3ms while 2 hung forever. Removed parallel resolution entirely — each call is a ~1μs in-memory map lookup, so 25K calls complete in ~25ms sequentially. Also skips interface dispatch for non-Go files (TypeScript, Python, etc.) which would only create useless external stubs.
+
+### Removed
+- Parallel call resolution (`resolveCallsParallel`, `runResolveWorker`, `preWarmImportCache`).
+- `mu` and `stubMu` RWMutex fields — no longer needed without concurrent access.
+
+### Changed
+- MCP server version bumped to 1.16.5.
+
 ## [0.7.17] - 2026-02-09
 
 ### Fixed
@@ -382,7 +394,8 @@ Initial open source release of CIE (Code Intelligence Engine).
 - No hardcoded credentials in codebase
 - All API keys via environment variables only
 
-[unreleased]: https://github.com/kraklabs/cie/compare/v0.7.17...HEAD
+[unreleased]: https://github.com/kraklabs/cie/compare/v0.7.18...HEAD
+[0.7.18]: https://github.com/kraklabs/cie/compare/v0.7.17...v0.7.18
 [0.7.17]: https://github.com/kraklabs/cie/compare/v0.7.16...v0.7.17
 [0.7.16]: https://github.com/kraklabs/cie/compare/v0.7.15...v0.7.16
 [0.7.15]: https://github.com/kraklabs/cie/compare/v0.7.14...v0.7.15

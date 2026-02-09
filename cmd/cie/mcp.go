@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	mcpVersion    = "1.16.4" // skip interface dispatch for non-Go files, parallel resolver diagnostics
+	mcpVersion    = "1.16.5" // sequential-only resolver, remove parallel deadlock
 	mcpServerName = "cie"
 )
 
