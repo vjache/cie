@@ -224,8 +224,17 @@ func splitParamTokens(s string) []string {
 			break
 		}
 
-		for i < len(s) && s[i] != ' ' && s[i] != '\t' && s[i] != '(' && s[i] != ')' {
-			i++
+		for i < len(s) && s[i] != ' ' && s[i] != '\t' {
+			if s[i] == '(' {
+				end := findMatchingParen(s, i)
+				if end == -1 {
+					i = len(s)
+				} else {
+					i = end + 1
+				}
+			} else {
+				i++
+			}
 		}
 		token := s[start:i]
 		if token != "" {
