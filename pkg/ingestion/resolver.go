@@ -22,10 +22,12 @@ package ingestion
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"log/slog"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 )
 
 // CallResolver resolves cross-package function calls.
@@ -184,9 +186,47 @@ func (r *CallResolver) buildImportPathMapping() {
 func (r *CallResolver) ResolveCalls(unresolvedCalls []UnresolvedCall) []CallsEdge {
 	// For small sets, use sequential processing (avoid goroutine overhead)
 	if len(unresolvedCalls) < 1000 {
+		slog.Info("resolver.resolve_calls", "mode", "sequential", "calls", len(unresolvedCalls))
 		return r.resolveCallsSequential(unresolvedCalls)
 	}
+
+	// Pre-warm the import path cache before going parallel.
+	// This resolves all unique import paths under a single-threaded write lock,
+	// so parallel workers only ever hit the fast RLock path.
+	warmStart := time.Now()
+	r.preWarmImportCache(unresolvedCalls)
+	slog.Info("resolver.resolve_calls",
+		"mode", "parallel",
+		"calls", len(unresolvedCalls),
+		"cache_warm_ms", time.Since(warmStart).Milliseconds(),
+		"cached_imports", len(r.importPathToPackagePath),
+	)
+
 	return r.resolveCallsParallel(unresolvedCalls)
+}
+
+// preWarmImportCache resolves all unique import paths sequentially so that
+// parallel workers never hit the expensive write-lock path in findPackageByImportPath.
+func (r *CallResolver) preWarmImportCache(unresolvedCalls []UnresolvedCall) {
+	seen := make(map[string]bool)
+	for _, call := range unresolvedCalls {
+		if !strings.Contains(call.CalleeName, ".") {
+			continue
+		}
+		imports, ok := r.fileImports[call.FilePath]
+		if !ok {
+			continue
+		}
+		parts := strings.SplitN(call.CalleeName, ".", 2)
+		importPath, ok := imports[parts[0]]
+		if !ok {
+			continue
+		}
+		if !seen[importPath] {
+			seen[importPath] = true
+			r.findPackageByImportPath(importPath)
+		}
+	}
 }
 
 // resolveCallsSequential processes calls sequentially (for small sets).
@@ -224,78 +264,70 @@ func (r *CallResolver) resolveCallsSequential(unresolvedCalls []UnresolvedCall) 
 }
 
 // resolveCallsParallel processes calls in parallel using worker pool.
-// The indices are read-only after BuildIndex, so concurrent access is safe.
+// Each worker collects results into a local slice (no shared channel),
+// then results are merged after all workers finish.
 func (r *CallResolver) resolveCallsParallel(unresolvedCalls []UnresolvedCall) []CallsEdge {
 	numWorkers := runtime.NumCPU()
 	if numWorkers > 8 {
 		numWorkers = 8 // Cap at 8 workers
 	}
 
-	// Channel for jobs (indices into unresolvedCalls)
-	jobs := make(chan int, len(unresolvedCalls))
+	// Partition work into chunks — each worker gets its own slice range
+	chunkSize := (len(unresolvedCalls) + numWorkers - 1) / numWorkers
+	workerResults := make([][]CallsEdge, numWorkers)
 
-	// Channel for results
-	type resolveResult struct {
-		callerID string
-		calleeID string
-		callLine int
-	}
-	results := make(chan resolveResult, len(unresolvedCalls))
-
-	// Start workers
 	var wg sync.WaitGroup
 	for w := 0; w < numWorkers; w++ {
+		start := w * chunkSize
+		end := start + chunkSize
+		if end > len(unresolvedCalls) {
+			end = len(unresolvedCalls)
+		}
+		if start >= end {
+			continue
+		}
+
 		wg.Add(1)
-		go func() {
+		go func(workerID, start, end int) {
 			defer wg.Done()
-			for i := range jobs {
+			var local []CallsEdge
+			for i := start; i < end; i++ {
 				call := unresolvedCalls[i]
 				calleeID := r.resolveCall(call)
 				if calleeID != "" {
-					results <- resolveResult{
-						callerID: call.CallerID,
-						calleeID: calleeID,
-						callLine: call.Line,
-					}
+					local = append(local, CallsEdge{
+						CallerID: call.CallerID,
+						CalleeID: calleeID,
+						CallLine: call.Line,
+					})
 				} else {
 					// Fallback: try interface dispatch resolution
 					ifaceEdges := r.resolveInterfaceCall(call)
 					for _, edge := range ifaceEdges {
-						results <- resolveResult{
-							callerID: edge.CallerID,
-							calleeID: edge.CalleeID,
-							callLine: call.Line,
-						}
+						local = append(local, CallsEdge{
+							CallerID: edge.CallerID,
+							CalleeID: edge.CalleeID,
+							CallLine: call.Line,
+						})
 					}
 				}
 			}
-		}()
+			workerResults[workerID] = local
+		}(w, start, end)
 	}
 
-	// Send jobs
-	for i := range unresolvedCalls {
-		jobs <- i
-	}
-	close(jobs)
+	wg.Wait()
 
-	// Wait for workers and close results
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	// Collect and deduplicate results
+	// Merge and deduplicate results from all workers
 	seen := make(map[string]bool)
 	var resolved []CallsEdge
-	for result := range results {
-		edgeKey := result.callerID + "->" + result.calleeID
-		if !seen[edgeKey] {
-			seen[edgeKey] = true
-			resolved = append(resolved, CallsEdge{
-				CallerID: result.callerID,
-				CalleeID: result.calleeID,
-				CallLine: result.callLine,
-			})
+	for _, results := range workerResults {
+		for _, edge := range results {
+			edgeKey := edge.CallerID + "->" + edge.CalleeID
+			if !seen[edgeKey] {
+				seen[edgeKey] = true
+				resolved = append(resolved, edge)
+			}
 		}
 	}
 

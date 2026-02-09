@@ -335,9 +335,18 @@ func (p *LocalPipeline) Run(ctx context.Context) (*IngestionResult, error) {
 	)
 
 	if len(allUnresolvedCalls) > 0 {
+		resolveStart := time.Now()
 		resolver := NewCallResolver()
 		resolver.BuildIndex(allFiles, allFunctions, allImports, packageNames)
 		resolver.SetInterfaceIndex(allFields, allImplements)
+
+		p.logger.Info("local.ingestion.resolve_calls.start",
+			"unresolved_calls", len(allUnresolvedCalls),
+			"packages", len(resolver.packageIndex),
+			"qualified_functions", len(resolver.qualifiedFunctions),
+			"build_index_ms", time.Since(resolveStart).Milliseconds(),
+		)
+
 		resolvedCalls := resolver.ResolveCalls(allUnresolvedCalls)
 		allCalls = append(allCalls, resolvedCalls...)
 
@@ -351,6 +360,7 @@ func (p *LocalPipeline) Run(ctx context.Context) (*IngestionResult, error) {
 			"local_calls", len(allCalls)-len(resolvedCalls),
 			"cross_package_resolved", len(resolvedCalls),
 			"external_stubs", len(stubFunctions),
+			"resolve_ms", time.Since(resolveStart).Milliseconds(),
 		)
 	}
 
