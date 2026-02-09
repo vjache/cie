@@ -439,11 +439,17 @@ func printResult(result *ingestion.IngestionResult) {
 		_, _ = ui.Green.Println("✓")
 	}
 
-	fmt.Printf("Functions Extracted: %s\n", ui.CountText(result.FunctionsExtracted))
-	fmt.Printf("Types Extracted: %s\n", ui.CountText(result.TypesExtracted))
-	fmt.Printf("Defines Edges: %s\n", ui.CountText(result.DefinesEdges))
-	fmt.Printf("Calls Edges: %s\n", ui.CountText(result.CallsEdges))
-	fmt.Printf("Entities Written: %s\n", ui.CountText(result.EntitiesSent))
+	checkMark := func(count int) string {
+		if count > 0 {
+			return " " + ui.Green.Sprint("✓")
+		}
+		return ""
+	}
+	fmt.Printf("Functions Extracted: %s%s\n", ui.CountText(result.FunctionsExtracted), checkMark(result.FunctionsExtracted))
+	fmt.Printf("Types Extracted: %s%s\n", ui.CountText(result.TypesExtracted), checkMark(result.TypesExtracted))
+	fmt.Printf("Defines Edges: %s%s\n", ui.CountText(result.DefinesEdges), checkMark(result.DefinesEdges))
+	fmt.Printf("Calls Edges: %s%s\n", ui.CountText(result.CallsEdges), checkMark(result.CallsEdges))
+	fmt.Printf("Entities Written: %s%s\n", ui.CountText(result.EntitiesSent), checkMark(result.EntitiesSent))
 
 	if result.ParseErrors > 0 {
 		_, _ = ui.Yellow.Printf("Parse Errors: %d (%.2f%%)\n", result.ParseErrors, result.ParseErrorRate)
