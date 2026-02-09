@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	mcpVersion    = "1.16.0" // trace_path: inline type definitions (include_types)
+	mcpVersion    = "1.16.1" // fix concurrent map writes in parallel call resolution
 	mcpServerName = "cie"
 )
 
