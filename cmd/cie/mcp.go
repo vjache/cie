@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	mcpVersion    = "1.16.1" // fix concurrent map writes in parallel call resolution
+	mcpVersion    = "1.16.2" // fix resolver hang on large repos (negative cache + stubMu split)
 	mcpServerName = "cie"
 )
 

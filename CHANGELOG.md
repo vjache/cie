@@ -5,6 +5,15 @@ All notable changes to CIE (Code Intelligence Engine) will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.15] - 2026-02-09
+
+### Fixed
+- **Resolver hang during indexing on large repositories** — `findPackageByImportPath` did not cache negative results, so every call to an external package (e.g., `strings`, `http`, `filepath`) re-scanned the full `packageIndex` under a write lock. With thousands of such calls and 8 parallel workers competing for the lock, `ResolveCalls` appeared to hang at `interface_dispatch`. Now caches negative lookups, reducing repeated scans from O(calls × packages) to O(unique imports × packages).
+- **Lock contention between stub creation and package lookups** — `resolveToImplementations` and `findPackageByImportPath` shared the same `mu` mutex, causing workers to block each other across unrelated operations. Introduced dedicated `stubMu` for `qualifiedFunctions`/`stubFunctions` access.
+
+### Changed
+- MCP server version bumped to 1.16.2.
+
 ## [0.7.14] - 2026-02-09
 
 ### Fixed
@@ -347,7 +356,8 @@ Initial open source release of CIE (Code Intelligence Engine).
 - No hardcoded credentials in codebase
 - All API keys via environment variables only
 
-[unreleased]: https://github.com/kraklabs/cie/compare/v0.7.14...HEAD
+[unreleased]: https://github.com/kraklabs/cie/compare/v0.7.15...HEAD
+[0.7.15]: https://github.com/kraklabs/cie/compare/v0.7.14...v0.7.15
 [0.7.14]: https://github.com/kraklabs/cie/compare/v0.7.13...v0.7.14
 [0.7.13]: https://github.com/kraklabs/cie/compare/v0.7.12...v0.7.13
 [0.7.12]: https://github.com/kraklabs/cie/compare/v0.7.11...v0.7.12
