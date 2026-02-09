@@ -277,6 +277,7 @@ func (r *CallResolver) resolveCallsParallel(unresolvedCalls []UnresolvedCall) []
 	workerResults := make([][]CallsEdge, numWorkers)
 
 	var wg sync.WaitGroup
+	workerStart := time.Now()
 	for w := 0; w < numWorkers; w++ {
 		start := w * chunkSize
 		end := start + chunkSize
@@ -290,19 +291,35 @@ func (r *CallResolver) resolveCallsParallel(unresolvedCalls []UnresolvedCall) []
 		wg.Add(1)
 		go func(workerID, start, end int) {
 			defer wg.Done()
+			wStart := time.Now()
 			var local []CallsEdge
+			var directHits, ifaceHits, misses int
 			for i := start; i < end; i++ {
+				processed := i - start
+				if processed > 0 && processed%1000 == 0 {
+					slog.Info("resolver.worker.progress",
+						"worker", workerID,
+						"processed", processed,
+						"of", end-start,
+						"elapsed_ms", time.Since(wStart).Milliseconds(),
+					)
+				}
 				call := unresolvedCalls[i]
 				calleeID := r.resolveCall(call)
 				if calleeID != "" {
+					directHits++
 					local = append(local, CallsEdge{
 						CallerID: call.CallerID,
 						CalleeID: calleeID,
 						CallLine: call.Line,
 					})
 				} else {
-					// Fallback: try interface dispatch resolution
 					ifaceEdges := r.resolveInterfaceCall(call)
+					if len(ifaceEdges) > 0 {
+						ifaceHits++
+					} else {
+						misses++
+					}
 					for _, edge := range ifaceEdges {
 						local = append(local, CallsEdge{
 							CallerID: edge.CallerID,
@@ -313,10 +330,41 @@ func (r *CallResolver) resolveCallsParallel(unresolvedCalls []UnresolvedCall) []
 				}
 			}
 			workerResults[workerID] = local
+			slog.Info("resolver.worker.done",
+				"worker", workerID,
+				"calls", end-start,
+				"direct", directHits,
+				"iface", ifaceHits,
+				"miss", misses,
+				"edges", len(local),
+				"ms", time.Since(wStart).Milliseconds(),
+			)
 		}(w, start, end)
 	}
 
+	// Heartbeat ticker so the user knows the process is alive
+	done := make(chan struct{})
+	go func() {
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				slog.Info("resolver.parallel.heartbeat",
+					"elapsed_s", int(time.Since(workerStart).Seconds()),
+				)
+			case <-done:
+				return
+			}
+		}
+	}()
+
 	wg.Wait()
+	close(done)
+	slog.Info("resolver.parallel.done",
+		"workers", numWorkers,
+		"total_ms", time.Since(workerStart).Milliseconds(),
+	)
 
 	// Merge and deduplicate results from all workers
 	seen := make(map[string]bool)
@@ -481,6 +529,13 @@ func (r *CallResolver) SetInterfaceIndex(fields []FieldEntity, implements []Impl
 //   - "querier.StoreFact"   → field="querier", method="StoreFact" (no receiver prefix)
 func (r *CallResolver) resolveInterfaceCall(call UnresolvedCall) []CallsEdge {
 	if !strings.Contains(call.CalleeName, ".") {
+		return nil
+	}
+
+	// Interface dispatch only applies to Go files — skip TypeScript, Python, etc.
+	// These calls would always miss and create useless external stubs, causing
+	// stubMu.Lock contention that serializes all parallel workers.
+	if !strings.HasSuffix(call.FilePath, ".go") {
 		return nil
 	}
 
