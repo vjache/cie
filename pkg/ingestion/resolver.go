@@ -535,8 +535,10 @@ func (r *CallResolver) resolveInterfaceCallViaParams(call UnresolvedCall) []Call
 // For external types not in the index, generates synthetic stub entries.
 func (r *CallResolver) resolveToImplementations(callerID, methodName, fieldType string) []CallsEdge {
 	// 1. Try interface dispatch: fieldType is an interface with known implementors
+	// implementsIndex is read-only during parallel resolution, no lock needed.
 	implTypes, ok := r.implementsIndex[fieldType]
 	if ok {
+		r.mu.RLock()
 		var edges []CallsEdge
 		for _, implType := range implTypes {
 			qualifiedName := implType + "." + methodName
@@ -547,6 +549,7 @@ func (r *CallResolver) resolveToImplementations(callerID, methodName, fieldType 
 				})
 			}
 		}
+		r.mu.RUnlock()
 		if len(edges) > 0 {
 			return edges
 		}
@@ -554,14 +557,24 @@ func (r *CallResolver) resolveToImplementations(callerID, methodName, fieldType 
 
 	// 2. Concrete type fallback: fieldType is a concrete type (e.g., CozoDB)
 	qualifiedName := fieldType + "." + methodName
+	r.mu.RLock()
 	if calleeID, ok := r.qualifiedFunctions[qualifiedName]; ok {
+		r.mu.RUnlock()
 		return []CallsEdge{{CallerID: callerID, CalleeID: calleeID}}
 	}
+	r.mu.RUnlock()
 
 	// 3. External type stub: type not in index (e.g., sql.DB, http.Client)
 	// Skip primitive/builtin types that can't have methods
 	if isPrimitiveOrBuiltinType(fieldType) {
 		return nil
+	}
+
+	r.mu.Lock()
+	// Double-check after acquiring write lock: another goroutine may have created the stub.
+	if calleeID, ok := r.qualifiedFunctions[qualifiedName]; ok {
+		r.mu.Unlock()
+		return []CallsEdge{{CallerID: callerID, CalleeID: calleeID}}
 	}
 	stubID := generateExternalStubID(fieldType, methodName)
 	r.qualifiedFunctions[qualifiedName] = stubID
@@ -572,6 +585,7 @@ func (r *CallResolver) resolveToImplementations(callerID, methodName, fieldType 
 		StartLine: 1,
 		EndLine:   1,
 	})
+	r.mu.Unlock()
 	return []CallsEdge{{CallerID: callerID, CalleeID: stubID}}
 }
 
