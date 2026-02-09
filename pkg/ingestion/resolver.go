@@ -291,54 +291,7 @@ func (r *CallResolver) resolveCallsParallel(unresolvedCalls []UnresolvedCall) []
 		wg.Add(1)
 		go func(workerID, start, end int) {
 			defer wg.Done()
-			wStart := time.Now()
-			var local []CallsEdge
-			var directHits, ifaceHits, misses int
-			for i := start; i < end; i++ {
-				processed := i - start
-				if processed > 0 && processed%1000 == 0 {
-					slog.Info("resolver.worker.progress",
-						"worker", workerID,
-						"processed", processed,
-						"of", end-start,
-						"elapsed_ms", time.Since(wStart).Milliseconds(),
-					)
-				}
-				call := unresolvedCalls[i]
-				calleeID := r.resolveCall(call)
-				if calleeID != "" {
-					directHits++
-					local = append(local, CallsEdge{
-						CallerID: call.CallerID,
-						CalleeID: calleeID,
-						CallLine: call.Line,
-					})
-				} else {
-					ifaceEdges := r.resolveInterfaceCall(call)
-					if len(ifaceEdges) > 0 {
-						ifaceHits++
-					} else {
-						misses++
-					}
-					for _, edge := range ifaceEdges {
-						local = append(local, CallsEdge{
-							CallerID: edge.CallerID,
-							CalleeID: edge.CalleeID,
-							CallLine: call.Line,
-						})
-					}
-				}
-			}
-			workerResults[workerID] = local
-			slog.Info("resolver.worker.done",
-				"worker", workerID,
-				"calls", end-start,
-				"direct", directHits,
-				"iface", ifaceHits,
-				"miss", misses,
-				"edges", len(local),
-				"ms", time.Since(wStart).Milliseconds(),
-			)
+			workerResults[workerID] = r.runResolveWorker(workerID, unresolvedCalls[start:end])
 		}(w, start, end)
 	}
 
@@ -380,6 +333,58 @@ func (r *CallResolver) resolveCallsParallel(unresolvedCalls []UnresolvedCall) []
 	}
 
 	return resolved
+}
+
+// runResolveWorker processes a chunk of unresolved calls and returns the resolved edges.
+func (r *CallResolver) runResolveWorker(workerID int, calls []UnresolvedCall) []CallsEdge {
+	wStart := time.Now()
+	var local []CallsEdge
+	var directHits, ifaceHits, misses int
+
+	for i, call := range calls {
+		if i > 0 && i%1000 == 0 {
+			slog.Info("resolver.worker.progress",
+				"worker", workerID,
+				"processed", i,
+				"of", len(calls),
+				"elapsed_ms", time.Since(wStart).Milliseconds(),
+			)
+		}
+		calleeID := r.resolveCall(call)
+		if calleeID != "" {
+			directHits++
+			local = append(local, CallsEdge{
+				CallerID: call.CallerID,
+				CalleeID: calleeID,
+				CallLine: call.Line,
+			})
+			continue
+		}
+		ifaceEdges := r.resolveInterfaceCall(call)
+		if len(ifaceEdges) > 0 {
+			ifaceHits++
+		} else {
+			misses++
+		}
+		for _, edge := range ifaceEdges {
+			local = append(local, CallsEdge{
+				CallerID: edge.CallerID,
+				CalleeID: edge.CalleeID,
+				CallLine: call.Line,
+			})
+		}
+	}
+
+	slog.Info("resolver.worker.done",
+		"worker", workerID,
+		"calls", len(calls),
+		"direct", directHits,
+		"iface", ifaceHits,
+		"miss", misses,
+		"edges", len(local),
+		"ms", time.Since(wStart).Milliseconds(),
+	)
+	return local
 }
 
 // resolveCall attempts to resolve a single unresolved call.

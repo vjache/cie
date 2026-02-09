@@ -5,6 +5,19 @@ All notable changes to CIE (Code Intelligence Engine) will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.17] - 2026-02-09
+
+### Fixed
+- **Resolver hang on multi-language repositories** — TypeScript/Python calls with dots (e.g., `console.log`, `this.state`, `Array.from`) were going through Go-specific interface dispatch, creating useless external stubs under `stubMu.Lock()`. Go's `RWMutex` is writer-preferring: each Lock blocked all concurrent RLock readers, effectively serializing all 8 parallel workers. Now skips interface dispatch entirely for non-Go files.
+
+### Added
+- Per-worker progress logging during parallel call resolution (every 1000 calls).
+- Per-worker completion stats: direct hits, interface hits, misses, edge count, and timing.
+- 5-second heartbeat ticker during parallel resolution for liveness visibility.
+
+### Changed
+- MCP server version bumped to 1.16.4.
+
 ## [0.7.16] - 2026-02-09
 
 ### Fixed
@@ -369,7 +382,8 @@ Initial open source release of CIE (Code Intelligence Engine).
 - No hardcoded credentials in codebase
 - All API keys via environment variables only
 
-[unreleased]: https://github.com/kraklabs/cie/compare/v0.7.16...HEAD
+[unreleased]: https://github.com/kraklabs/cie/compare/v0.7.17...HEAD
+[0.7.17]: https://github.com/kraklabs/cie/compare/v0.7.16...v0.7.17
 [0.7.16]: https://github.com/kraklabs/cie/compare/v0.7.15...v0.7.16
 [0.7.15]: https://github.com/kraklabs/cie/compare/v0.7.14...v0.7.15
 [0.7.14]: https://github.com/kraklabs/cie/compare/v0.7.13...v0.7.14

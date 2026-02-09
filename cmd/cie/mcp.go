@@ -37,7 +37,7 @@ import (
 )
 
 const (
-	mcpVersion    = "1.16.3" // per-worker parallel resolver, pre-warm import cache, diagnostic timing
+	mcpVersion    = "1.16.4" // skip interface dispatch for non-Go files, parallel resolver diagnostics
 	mcpServerName = "cie"
 )
 
