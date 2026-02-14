@@ -5,6 +5,23 @@ All notable changes to CIE (Code Intelligence Engine) will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.20] - 2026-02-14
+
+### Added
+- **Configurable local data directory** — Users can now control where CIE stores indexed data via the `indexing.local_data_dir` config field or the `CIE_DATA_DIR` environment variable. Relative paths are resolved from the directory containing `.cie/project.yaml`. Defaults to `~/.cie/data/<project_id>/` (unchanged behavior).
+- **Stale RocksDB LOCK file recovery** — If CozoDB fails to open and a LOCK file exists, CIE checks whether any process actually holds it. If the lock is stale (e.g., after a crash), it is removed automatically and the database is retried.
+- **Graceful shutdown with force-quit** — All signal handlers (`index`, `mcp`, `serve`) now call `signal.Stop` after the first interrupt so that a second Ctrl+C force-quits immediately via Go's default handler.
+- Centralized path resolution module (`cmd/cie/paths.go`) with unit tests for absolute, relative, and default fallback behavior.
+- Legacy data directory warning when `local_data_dir` is configured and data exists at the old default path but not the new one.
+
+### Changed
+- `Makefile` now uses `$(GOPATH)/bin` instead of `$(HOME)/go/bin` for install directory; added macOS ad-hoc codesigning after install.
+- `pkg/cozodb/cozodb.go` updated CGO LDFLAGS with `-L${SRCDIR}/../../lib` for proper library linking.
+- `pkg/ingestion/local_pipeline.go` — `FunctionCount()` method added to query through the already-open database instead of opening a separate connection.
+
+### Removed
+- Standalone `checkLocalData` helper — replaced by `LocalPipeline.FunctionCount()`.
+
 ## [0.7.19] - 2026-02-09
 
 ### Fixed
