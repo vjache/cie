@@ -353,18 +353,6 @@ func (c *Config) applyEnvOverrides() {
 	}
 }
 
-// getCIEDir returns the path to ~/.cie directory, creating it if needed.
-func getCIEDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", err
-	}
-	cieDir := filepath.Join(home, ".cie")
-	if err := os.MkdirAll(cieDir, 0750); err != nil {
-		return "", err
-	}
-	return cieDir, nil
-}
 
 // getEnv retrieves an environment variable or returns a fallback value if not set.
 //

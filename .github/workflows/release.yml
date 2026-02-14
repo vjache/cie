@@ -119,8 +119,8 @@ jobs:
         run: |
           curl -L "https://github.com/cozodb/cozo/releases/download/v${COZO_VERSION}/libcozo_c-${COZO_VERSION}-${COZO_PLATFORM}.a.gz" -o /tmp/libcozo_c.a.gz
           gunzip /tmp/libcozo_c.a.gz
-          sudo mkdir -p /usr/local/lib
-          sudo cp /tmp/libcozo_c.a /usr/local/lib/libcozo_c.a
+          # Place in repo lib/ so CGO LDFLAGS -L${SRCDIR}/../../lib finds the correct platform library
+          cp /tmp/libcozo_c.a lib/libcozo_c.a
 
       - name: Build binary
         env:
