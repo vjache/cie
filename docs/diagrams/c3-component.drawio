@@ -1,0 +1,76 @@
+<mxfile host="CIE" modified="2026-02-25T00:00:00.000Z" agent="CIE" version="1.0" etag="c3" type="device">
+  <diagram id="c3-component" name="C3-Component">
+    <mxGraphModel dx="900" dy="600" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1169" pageHeight="827" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="repo" value="RepoLoader&#xa;pkg/ingestion/repo_loader.go" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="120" y="60" width="140" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="parser" value="Parser&#xa;(Tree-sitter)&#xa;parser_go, _python, _ts, _js" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="120" y="150" width="160" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="resolver" value="CallResolver&#xa;pkg/ingestion/resolver.go" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="120" y="250" width="160" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="embed" value="EmbeddingGenerator&#xa;pkg/ingestion/embedding.go" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;" vertex="1" parent="1">
+          <mxGeometry x="120" y="340" width="160" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="pipe" value="LocalPipeline&#xa;+ Batcher + Checkpoint&#xa;pkg/ingestion/local_pipeline.go" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;" vertex="1" parent="1">
+          <mxGeometry x="120" y="430" width="200" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="storage" value="Storage / CozoDB&#xa;pkg/storage, pkg/cozodb" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;size=8;fillColor=#ffe6cc;strokeColor=#d79b00;" vertex="1" parent="1">
+          <mxGeometry x="400" y="250" width="120" height="70" as="geometry"/>
+        </mxCell>
+        <mxCell id="tools" value="Tools Layer&#xa;(20+ MCP tools)&#xa;semantic, grep, trace,&#xa;endpoints, analyze, ..." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;" vertex="1" parent="1">
+          <mxGeometry x="400" y="80" width="160" height="80" as="geometry"/>
+        </mxCell>
+        <mxCell id="querier" value="Querier&#xa;(Embedded / HTTP)" style="rhombus;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;" vertex="1" parent="1">
+          <mxGeometry x="420" y="380" width="80" height="60" as="geometry"/>
+        </mxCell>
+        <mxCell id="c1" value="" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1" source="repo" target="parser">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="190" y="120" as="sourcePoint"/>
+            <mxPoint x="200" y="150" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="c2" value="" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1" source="parser" target="resolver">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="200" y="220" as="sourcePoint"/>
+            <mxPoint x="200" y="250" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="c3" value="" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1" source="resolver" target="embed">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="200" y="310" as="sourcePoint"/>
+            <mxPoint x="200" y="340" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="c4" value="" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1" source="embed" target="pipe">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="200" y="400" as="sourcePoint"/>
+            <mxPoint x="220" y="430" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="c5" value="batch put" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1" source="pipe" target="storage">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="320" y="460" as="sourcePoint"/>
+            <mxPoint x="460" y="285" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="c6" value="query" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1" source="storage" target="querier">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="460" y="320" as="sourcePoint"/>
+            <mxPoint x="460" y="380" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="c7" value="" style="endArrow=classic;html=1;rounded=0;" edge="1" parent="1" source="querier" target="tools">
+          <mxGeometry width="50" height="50" relative="1" as="geometry">
+            <mxPoint x="460" y="380" as="sourcePoint"/>
+            <mxPoint x="480" y="120" as="targetPoint"/>
+          </mxGeometry>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
